@@ -900,6 +900,7 @@ VanillaProc::JobReaper(int pid, int status)
 
 		if( exit_status == successfulCheckpointStatus ) {
 			if( isSoftKilling ) {
+				Starter->jic->uploadCheckpointFiles();
 				notifySuccessfulEvictionCheckpoint();
 				return true;
 			}
@@ -944,6 +945,7 @@ VanillaProc::JobReaper(int pid, int status)
 		dprintf( D_FULLDEBUG, "Inside VanillaProc::JobReaper() and the job self-checkpointed.\n" );
 
 		if( isSoftKilling ) {
+			Starter->jic->uploadCheckpointFiles();
 			notifySuccessfulEvictionCheckpoint();
 			return true;
 		} else {
