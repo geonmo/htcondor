@@ -2142,7 +2142,6 @@ Client::Client()
 	c_acctgrp = NULL;
 	c_addr = NULL;
 	c_host = NULL;
-	c_proxyfile = NULL;
 	c_concurrencyLimits = NULL;
     c_rmtgrp = NULL;
     c_neggrp = NULL;
@@ -2249,19 +2248,6 @@ Client::sethost( const char* updated_host )
 		c_host = strdup( updated_host );
 	} else {
 		c_host = NULL;
-	}
-}
-
-void
-Client::setProxyFile( const char* pf )
-{
-	if( c_proxyfile ) {
-		free( c_proxyfile );
-	}
-	if ( pf ) {
-		c_proxyfile = strdup( pf );
-	} else {
-		c_proxyfile = NULL;
 	}
 }
 
@@ -2455,16 +2441,14 @@ ClaimId::dropFile( int slot_id )
 	if( ! param_boolean("STARTD_SHOULD_WRITE_CLAIM_ID_FILE", true) ) {
 		return;
 	}
-	char* filename = startdClaimIdFile( slot_id );  
-	if( ! filename ) {
+	std::string filename = startdClaimIdFile( slot_id );  
+	if( filename.empty() ) {
 		dprintf( D_ALWAYS, "Error getting claim id filename, not writing\n" );
 		return;
 	}
 
 	std::string filename_final = filename;
 	std::string filename_tmp = filename;
-	free( filename );
-	filename = NULL;
 
 	filename_tmp += ".new";
 
