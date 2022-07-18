@@ -900,8 +900,13 @@ VanillaProc::JobReaper(int pid, int status)
 
 		if( exit_status == successfulCheckpointStatus ) {
 			if( isSoftKilling ) {
-				Starter->jic->uploadCheckpointFiles();
-				notifySuccessfulEvictionCheckpoint();
+				if( Starter->jic->uploadCheckpointFiles() ) {
+					notifySuccessfulEvictionCheckpoint();
+        			} else {
+		                // We assume this is a transient failure and will try
+                    		// to transfer again after the next periodic checkpoint.
+	                        	dprintf( D_ALWAYS, "Failed to transfer checkpoint.\n" );
+        			}
 				return true;
 			}
 
@@ -945,8 +950,13 @@ VanillaProc::JobReaper(int pid, int status)
 		dprintf( D_FULLDEBUG, "Inside VanillaProc::JobReaper() and the job self-checkpointed.\n" );
 
 		if( isSoftKilling ) {
-			Starter->jic->uploadCheckpointFiles();
-			notifySuccessfulEvictionCheckpoint();
+			if( Starter->jic->uploadCheckpointFiles() ) {
+				notifySuccessfulEvictionCheckpoint();
+			} else {
+				// We assume this is a transient failure and will try
+				// to transfer again after the next periodic checkpoint.
+				dprintf( D_ALWAYS, "Failed to transfer checkpoint.\n" );
+			}
 			return true;
 		} else {
 			restartCheckpointedJob();
