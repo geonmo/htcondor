@@ -903,8 +903,7 @@ VanillaProc::JobReaper(int pid, int status)
 				if( Starter->jic->uploadCheckpointFiles() ) {
 					notifySuccessfulEvictionCheckpoint();
         			} else {
-		                // We assume this is a transient failure and will try
-                    		// to transfer again after the next periodic checkpoint.
+		                	// We assume this is a transient failure 
 	                        	dprintf( D_ALWAYS, "Failed to transfer checkpoint.\n" );
         			}
 				return true;
@@ -954,7 +953,6 @@ VanillaProc::JobReaper(int pid, int status)
 				notifySuccessfulEvictionCheckpoint();
 			} else {
 				// We assume this is a transient failure and will try
-				// to transfer again after the next periodic checkpoint.
 				dprintf( D_ALWAYS, "Failed to transfer checkpoint.\n" );
 			}
 			return true;
