@@ -542,6 +542,7 @@ Requires: python-six
 Requires: python-flask
 Requires: python2-cryptography
 Requires: python2-scitokens
+Requires: mod_wsgi
 %else
 Requires: python3-condor = %{version}-%{release}
 Requires: python3-requests-oauthlib
@@ -549,9 +550,9 @@ Requires: python3-six
 Requires: python3-flask
 Requires: python3-cryptography
 Requires: python3-scitokens
+Requires: python3-mod_wsgi
 %endif
 Requires: httpd
-Requires: mod_wsgi
 
 %description credmon-oauth
 The OAuth2 credmon allows users to obtain credentials from configured
@@ -1636,6 +1637,9 @@ fi
 /bin/systemctl try-restart condor.service >/dev/null 2>&1 || :
 
 %changelog
+* Mon Jul 18 2022 Tim Theisen <tim@cs.wisc.edu> - 9.10.1-1
+- ActivationSetupDuration is now correct for jobs that checkpoint
+
 * Thu Jul 14 2022 Tim Theisen <tim@cs.wisc.edu> - 9.10.0-1
 - With collector administrator access, can manage all HTCondor pool daemons
 - SciTokens can now be used for authentication with ARC CE servers
