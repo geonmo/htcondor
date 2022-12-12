@@ -49,7 +49,8 @@
 #define SUBMIT_KEY_Description "description"
 #define SUBMIT_KEY_Arguments1 "arguments"
 #define SUBMIT_KEY_Arguments2 "arguments2"
-#define SUBMIT_KEY_Environment1 "environment"
+#define SUBMIT_KEY_Environment "environment"
+#define SUBMIT_KEY_Env "env"
 #define SUBMIT_KEY_Environment2 "environment2"
 #define SUBMIT_KEY_Input "input"
 #define SUBMIT_KEY_Stdin "stdin"
@@ -57,9 +58,6 @@
 #define SUBMIT_KEY_Stdout "stdout"
 #define SUBMIT_KEY_Error "error"
 #define SUBMIT_KEY_Stderr "stderr"
-#if !defined(WIN32)
-#define SUBMIT_KEY_RootDir "rootdir"
-#endif
 #define SUBMIT_KEY_InitialDir "initialdir"
 #define SUBMIT_KEY_InitialDirAlt "initial_dir"
 #define SUBMIT_KEY_JobIwd "job_iwd"
@@ -104,8 +102,6 @@
 #define SUBMIT_KEY_UseScitokensAlt "use_scitoken"
 #define SUBMIT_KEY_ScitokensFile "scitokens_file"
 #define SUBMIT_KEY_DelegateJobGSICredentialsLifetime "delegate_job_gsi_credentials_lifetime"
-#define SUBMIT_KEY_NordugridRSL "nordugrid_rsl"
-#define SUBMIT_KEY_ArcRSL "arc_rsl"
 #define SUBMIT_KEY_ArcRte "arc_rte"
 #define SUBMIT_KEY_ArcApplication "arc_application"
 #define SUBMIT_KEY_ArcResources "arc_resources"
@@ -194,9 +190,6 @@
 #define SUBMIT_KEY_NoopExitSignal "noop_job_exit_signal"
 #define SUBMIT_KEY_NoopExitCode "noop_job_exit_code"
 
-#define SUBMIT_KEY_GlobusResubmit "globus_resubmit"
-#define SUBMIT_KEY_GlobusRematch "globus_rematch"
-
 #define SUBMIT_KEY_LastMatchListLength "match_list_length"
 
 #define SUBMIT_KEY_DAGManJobId "dagman_job_id"
@@ -262,6 +255,7 @@
 //
 #define SUBMIT_KEY_DockerImage "docker_image"
 #define SUBMIT_KEY_DockerNetworkType "docker_network_type"
+#define SUBMIT_KEY_DockerPullPolicy "docker_pull_policy"
 
 #define SUBMIT_KEY_ContainerImage "container_image"
 #define SUBMIT_KEY_ContainerServiceNames "container_service_names"
@@ -285,9 +279,6 @@
 #define SUBMIT_KEY_VM_XEN_INITRD "xen_initrd"
 #define SUBMIT_KEY_VM_XEN_ROOT   "xen_root"
 #define SUBMIT_KEY_VM_XEN_KERNEL_PARAMS "xen_kernel_params"
-#define SUBMIT_KEY_VM_VMWARE_SHOULD_TRANSFER_FILES "vmware_should_transfer_files"
-#define SUBMIT_KEY_VM_VMWARE_SNAPSHOT_DISK "vmware_snapshot_disk"
-#define SUBMIT_KEY_VM_VMWARE_DIR "vmware_dir"
 
 //
 // EC2 Query Parameters
@@ -325,8 +316,6 @@
 #define SUBMIT_KEY_EC2ParamPrefix "ec2_parameter_"
 #define SUBMIT_KEY_EC2IamProfileArn "ec2_iam_profile_arn"
 #define SUBMIT_KEY_EC2IamProfileName "ec2_iam_profile_name"
-
-#define SUBMIT_KEY_BoincAuthenticatorFile "boinc_authenticator_file"
 
 //
 // GCE Parameters
@@ -494,7 +483,6 @@ public:
 	void init(int value=-1);
 	void clear(); // clear, but do not deallocate
 	void setScheddVersion(const char * version) { ScheddVersion = version; }
-	void setMyProxyPassword(const char * pass) { MyProxyPassword = pass; }
 	bool setDisableFileChecks(bool value) { bool old = DisableFileChecks; DisableFileChecks = value; return old; }
 	bool setFakeFileCreationChecks(bool value) { bool old = FakeFileCreationChecks; FakeFileCreationChecks = value; return old; }
 	bool addExtendedCommands(const classad::ClassAd & cmds) { return extendedCmds.Update(cmds); }
@@ -748,14 +736,10 @@ protected:
 	bool UseDefaultResourceParams;
 	auto_free_ptr RunAsOwnerCredD;
 	std::string JobIwd;
-	#if !defined(WIN32)
-	MyString JobRootdir;
-	#endif
-	MyString JobGridType;  // set from "GridResource" for globus or grid universe jobs.
+	MyString JobGridType;  // set from "GridResource" for grid universe jobs.
 	std::string VMType;
 	MyString TempPathname; // temporary path used by full_path
 	MyString ScheddVersion; // target version of schedd, influences how jobad is filled in.
-	MyString MyProxyPassword; // set by command line or by submit file. command line wins
 	classad::References stringReqRes; // names of request_xxx submit variables that are string valued
 	classad::References forcedSubmitAttrs; // + and MY. attribute names from SUBMIT_ATTRS/EXPRS
 
@@ -773,11 +757,6 @@ protected:
 
 	int SetUniverse();  /* run once */
 
-#if !defined(WIN32)
-	int ComputeRootDir();
-	int SetRootDir();
-	int check_root_dir_access();
-#endif
 	int ComputeIWD();
 	int SetIWD();		  /* factory:ok */
 
@@ -878,7 +857,6 @@ private:
 	  const char * sp, const char * jp,
 	  const YourStringNoCase & gt );      /* used by SetGridParams */
 
-	int process_vm_input_files(StringList & input_files, long long * accumulate_size_kb); // call after building the input files list to find .vmx and .vmdk files in that list
 	int process_container_input_files(StringList & input_files, long long * accumulate_size_kb); // call after building the input files list to find .vmx and .vmdk files in that list
 
 	ContainerImageType image_type_from_string(const std::string &image) const;

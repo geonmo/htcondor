@@ -349,21 +349,8 @@ OsProc::StartJob(FamilyInfo* family_info, FilesystemRemap* fs_remap=NULL)
 	bool want_manifest = false;
 	if( JobAd->LookupString( ATTR_JOB_MANIFEST_DIR, manifest_dir ) ||
 	   (JobAd->LookupBool( ATTR_JOB_MANIFEST_DESIRED, want_manifest ) && want_manifest) ) {
-		int cluster, proc;
-		if( JobAd->LookupInteger( ATTR_CLUSTER_ID, cluster ) && JobAd->LookupInteger( ATTR_PROC_ID, proc ) ) {
-			formatstr( manifest_dir, "%d_%d_manifest", cluster, proc );
-		}
-		JobAd->LookupString( ATTR_JOB_MANIFEST_DIR, manifest_dir );
-		// Assumes we're in the root of the sandbox.
-		int r = mkdir( manifest_dir.c_str(), 0700 );
-		if (r < 0) {
-			dprintf(D_ALWAYS, "Cannot make manifest directory %s: %s\n", manifest_dir.c_str(), strerror(errno));
-		}
-		// jic->addToOutputFiles( manifest_dir.c_str() );
-		std::string f = manifest_dir + DIR_DELIM_CHAR + "environment";
-
-		// Assume we're in the root of the sandbox.
-		FILE * file = fopen( f.c_str(), "w" );
+		const std::string f = "environment";
+		FILE * file = Starter->OpenManifestFile( f.c_str() );
 		if( file != NULL ) {
 			std::string env_string;
 			job_env.getDelimitedStringForDisplay( env_string);
@@ -378,7 +365,14 @@ OsProc::StartJob(FamilyInfo* family_info, FilesystemRemap* fs_remap=NULL)
 	// Check to see if we need to start this process paused, and if
 	// so, pass the right flag to DC::Create_Process().
 	int job_opt_mask = DCJOBOPT_NO_CONDOR_ENV_INHERIT;
-	if (!param_boolean("JOB_INHERITS_STARTER_ENVIRONMENT",false)) {
+	bool inherit_starter_env = false;
+	auto_free_ptr envlist(param("JOB_INHERITS_STARTER_ENVIRONMENT"));
+	if (envlist && ! string_is_boolean_param(envlist, inherit_starter_env)) {
+		WhiteBlackEnvFilter filter(envlist);
+		job_env.Import(filter);
+		inherit_starter_env = false; // make sure that CreateProcess doesn't inherit again
+	}
+	if ( ! inherit_starter_env) {
 		job_opt_mask |= DCJOBOPT_NO_ENV_INHERIT;
 	}
 	bool suspend_job_at_exec = false;
@@ -475,7 +469,11 @@ OsProc::StartJob(FamilyInfo* family_info, FilesystemRemap* fs_remap=NULL)
 
 	if (sing_result == htcondor::Singularity::SUCCESS) {
 		dprintf(D_ALWAYS, "Running job via singularity.\n");
-		SetupSingularitySsh();
+		bool ssh_enabled = param_boolean("ENABLE_SSH_TO_JOB",true,true,Starter->jic->machClassAd(),JobAd);
+		if( ssh_enabled ) {
+			SetupSingularitySsh();
+		}
+
 		if (fs_remap) {
 			dprintf(D_ALWAYS, "Disabling filesystem remapping; singularity will perform these features.\n");
 			fs_remap = NULL;
@@ -1042,10 +1040,7 @@ OsProc::PublishToEnv( Env * proc_env ) {
 	UserProc::PublishToEnv( proc_env );
 
 	if( howCode != -1 ) {
-		std::string name;
-		formatstr( name, "_%s_HOW_CODE", myDistro->Get() );
-		upper_case(name);
-		proc_env->SetEnv( name, std::to_string( howCode ) );
+		proc_env->SetEnv( "_CONDOR_HOW_CODE", std::to_string( howCode ) );
 	}
 }
 
@@ -1179,7 +1174,16 @@ OsProc::AcceptSingSshClient(Stream *stream) {
         int fds[3];
         sns = ((ReliSock*)stream)->accept();
 
+		if (sns == nullptr) {
+			dprintf(D_ALWAYS, "Could not accept new connection from ssh_to_job client %d: %s\n", errno, strerror(errno));
+
+			// We have seen this error on production clusters, not sure what causes it.  To be safe
+			// let's cancel the socket, so we won't get caught in an infinite loop if the socket stays hot
+			daemonCore->Cancel_Socket(stream);
+			return KEEP_STREAM;
+		}
         dprintf(D_ALWAYS, "Accepted new connection from ssh client for container job\n");
+
         fds[0] = fdpass_recv(sns->get_file_desc());
         fds[1] = fdpass_recv(sns->get_file_desc());
         fds[2] = fdpass_recv(sns->get_file_desc());
@@ -1249,6 +1253,10 @@ OsProc::AcceptSingSshClient(Stream *stream) {
 
 	if (has_target) {
 		htcondor::Singularity::retargetEnvs(env, target_dir, "");
+		// nsenter itself uses _CONDOR_SCRATCH_DIR to decide where the
+		// home directory is, so leave this one behind, set to the
+		// old non-prefixed value
+		env.SetEnv("_CONDOR_SCRATCH_DIR", target_dir);
 	}
 
 	std::string bin_dir;

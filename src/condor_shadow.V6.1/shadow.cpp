@@ -136,7 +136,7 @@ UniShadow::init( ClassAd* job_ad, const char* schedd_addr, const char *xfer_queu
 	daemonCore->
 		Register_Command( CREDD_GET_CRED, "CREDD_GET_CRED",
 						  &cred_get_cred_handler,
-						  "cred_get_cred_handler", DAEMON, D_COMMAND,
+						  "cred_get_cred_handler", DAEMON,
 						  true /*force authentication*/ );
 }
 
@@ -174,10 +174,6 @@ UniShadow::logExecuteEvent( void )
 	remRes->getStartdAddress( sinful );
 	event.setExecuteHost( sinful );
 	free( sinful );
-	char* remote_name = NULL;
-	remRes->getStartdName(remote_name);
-	event.setRemoteName(remote_name);
-	free( remote_name );
 	if( !uLog.writeEvent(&event, getJobAd()) ) {
 		dprintf( D_ALWAYS, "Unable to log ULOG_EXECUTE event: "
 				 "can't write to UserLog!\n" );
@@ -228,7 +224,7 @@ void
 UniShadow::emailTerminateEvent( int exitReason, update_style_t kind )
 {
 	Email mailer;
-	float recvd_bytes = 0, sent_bytes = 0;
+	double recvd_bytes = 0, sent_bytes = 0;
 
 	if (kind == US_TERMINATE_PENDING) {
 		/* I don't have a remote resource, so get the values directly from

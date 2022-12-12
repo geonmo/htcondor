@@ -456,7 +456,6 @@ SecMan::UpdateAuthenticationMetadata(ClassAd &ad)
 	// that we didn't have one).
 	std::string issuer;
 	if (param(issuer, "TRUST_DOMAIN")) {
-		issuer = issuer.substr(0, issuer.find_first_of(", \t"));
 		ad.InsertAttr(ATTR_SEC_TRUST_DOMAIN, issuer);
 	}
 
@@ -1047,7 +1046,6 @@ class SecManStartCommand: Service, public ClassyCountedPtr {
 		m_have_session = false;
 		m_new_session = false;
 		m_state = SendAuthInfo;
-		m_enc_key = NULL;
 		m_private_key = NULL;
 		if(cmd_description) {
 			m_cmd_description = cmd_description;
@@ -1145,7 +1143,6 @@ class SecManStartCommand: Service, public ClassyCountedPtr {
 	ClassAd m_auth_info;
 	SecMan::sec_req m_negotiation;
 	std::string m_remote_version;
-	KeyCacheEntry *m_enc_key;
 	KeyInfo* m_private_key;
 	std::string m_sec_session_id_hint;
 	std::string m_owner;
@@ -1473,6 +1470,7 @@ SecMan::LookupNonExpiredSession(char const *session_id, KeyCacheEntry *&session_
 StartCommandResult
 SecManStartCommand::sendAuthInfo_inner()
 {
+	KeyCacheEntry* session_entry = nullptr;
 	Sinful destsinful( m_sock->get_connect_addr() );
 	Sinful oursinful( global_dc_sinful() );
 
@@ -1482,7 +1480,7 @@ SecManStartCommand::sendAuthInfo_inner()
 
 	sid = m_sec_session_id_hint;
 	if( sid.c_str()[0] && !m_raw_protocol && !m_use_tmp_sec_session ) {
-		m_have_session = m_sec_man.LookupNonExpiredSession(sid.c_str(), m_enc_key);
+		m_have_session = m_sec_man.LookupNonExpiredSession(sid.c_str(), session_entry);
 		if( m_have_session ) {
 			dprintf(D_SECURITY,"Using requested session %s.\n",sid.c_str());
 		}
@@ -1504,7 +1502,7 @@ SecManStartCommand::sendAuthInfo_inner()
 	if (found_map_ent) {
 		dprintf (D_SECURITY, "SECMAN: using session %s for %s.\n", sid.c_str(), m_session_key.c_str());
 		// we have the session id, now get the session from the cache
-		m_have_session = m_sec_man.LookupNonExpiredSession(sid.c_str(), m_enc_key);
+		m_have_session = m_sec_man.LookupNonExpiredSession(sid.c_str(), session_entry);
 
 		if(!m_have_session) {
 			// the session is no longer in the cache... might as well
@@ -1517,7 +1515,8 @@ SecManStartCommand::sendAuthInfo_inner()
 			}
 		}
 	}
-	if( !m_have_session && !m_raw_protocol && !m_use_tmp_sec_session && daemonCore && !daemonCore->m_family_session_id.empty() ) {
+	// The family session is only available in the primary session cache
+	if( !m_have_session && !m_raw_protocol && !m_use_tmp_sec_session && daemonCore && !daemonCore->m_family_session_id.empty() && m_sec_man.m_tag.empty() ) {
 		// We have a process family security session.
 		// Try using it if the following are all true:
 		// 1) Peer is on a local network interface
@@ -1525,7 +1524,7 @@ SecManStartCommand::sendAuthInfo_inner()
 		// 3) Peer isn't in m_not_my_family
 		if ( m_sock->peer_is_local() && (oursinful.getSharedPortID() == NULL || oursinful.getPortNum() == destsinful.getPortNum()) && m_sec_man.m_not_my_family.count(m_sock->get_connect_addr()) == 0 ) {
 			dprintf(D_SECURITY, "Trying family security session for local peer\n");
-			m_have_session = m_sec_man.LookupNonExpiredSession(daemonCore->m_family_session_id.c_str(), m_enc_key);
+			m_have_session = m_sec_man.LookupNonExpiredSession(daemonCore->m_family_session_id.c_str(), session_entry);
 			ASSERT(m_have_session);
 		}
 	}
@@ -1534,12 +1533,12 @@ SecManStartCommand::sendAuthInfo_inner()
 	// was decided on when the key was issued.
 	// otherwise, get our security policy and work it out with the server.
 	if (m_have_session) {
-		MergeClassAds( &m_auth_info, m_enc_key->policy(), true );
+		MergeClassAds( &m_auth_info, session_entry->policy(), true );
 
 		if (IsDebugVerbose(D_SECURITY)) {
 			dprintf (D_SECURITY, "SECMAN: found cached session id %s for %s.\n",
-					m_enc_key->id(), m_session_key.c_str());
-			m_sec_man.key_printf(D_SECURITY, m_enc_key->key());
+					session_entry->id().c_str(), m_session_key.c_str());
+			m_sec_man.key_printf(D_SECURITY, session_entry->key());
 			dPrintAd( D_SECURITY, m_auth_info );
 		}
 
@@ -1548,8 +1547,8 @@ SecManStartCommand::sendAuthInfo_inner()
 		// for this connection.
 		// Some sessions support a set of possible methods/keys, and
 		// some have no method/key.
-		if (m_enc_key->key()) {
-			Protocol crypto_type = m_enc_key->key()->getProtocol();
+		if (session_entry->key()) {
+			Protocol crypto_type = session_entry->key()->getProtocol();
 			const char *crypto_name = SecMan::getCryptProtocolEnumToName(crypto_type);
 			if (crypto_name && crypto_name[0]) {
 				m_auth_info.Assign(ATTR_SEC_CRYPTO_METHODS, crypto_name);
@@ -1569,7 +1568,7 @@ SecManStartCommand::sendAuthInfo_inner()
 		m_auth_info.LookupBool(ATTR_SEC_NEGOTIATED_SESSION, negotiated_session);
 		std::string last_peer_vers;
 		if (!negotiated_session) {
-			last_peer_vers = m_enc_key->getLastPeerVersion();
+			last_peer_vers = session_entry->getLastPeerVersion();
 		}
 		m_auth_info.LookupString(ATTR_SEC_REMOTE_VERSION, m_remote_version);
 		if (negotiated_session || last_peer_vers.empty()) {
@@ -1624,7 +1623,7 @@ SecManStartCommand::sendAuthInfo_inner()
 			// there is no ACK in the protocol, so we just do it here.  Worst case,
 			// we may end up trying to use a session that the server threw out,
 			// which has the same error-handling as a restart of the server.
-		m_enc_key->renewLease();
+		session_entry->renewLease();
 
 		// tweak the session if it's UDP
 		if(!m_is_tcp) {
@@ -1788,7 +1787,7 @@ SecManStartCommand::sendAuthInfo_inner()
 			dprintf ( D_SECURITY, "SECMAN: UDP has no session to use!\n");
 		}
 
-		ASSERT (m_enc_key == NULL);
+		ASSERT (session_entry == NULL);
 	}
 
 	// fill in our version
@@ -1838,7 +1837,7 @@ SecManStartCommand::sendAuthInfo_inner()
 		if (m_have_session) {
 			// UDP w/ session
 			if (IsDebugVerbose(D_SECURITY)) {
-				dprintf ( D_SECURITY, "SECMAN: UDP has session %s.\n", m_enc_key->id());
+				dprintf ( D_SECURITY, "SECMAN: UDP has session %s.\n", session_entry->id().c_str());
 			}
 
 			SecMan::sec_feat_act will_authenticate = m_sec_man.sec_lookup_feat_act( m_auth_info, ATTR_SEC_AUTHENTICATION );
@@ -1863,7 +1862,7 @@ SecManStartCommand::sendAuthInfo_inner()
 
 
 			KeyInfo* ki  = NULL;
-			if (m_enc_key->key()) {
+			if (session_entry->key()) {
 				KeyInfo* key_to_use;
 				KeyInfo* fallback_key;
 
@@ -1878,8 +1877,8 @@ SecManStartCommand::sendAuthInfo_inner()
 				}
 				dprintf(D_SECURITY|D_VERBOSE, "SESSION: fallback crypto method would be %s.\n", fallback_method_str.c_str());
 
-				key_to_use = m_enc_key->key();
-				fallback_key = m_enc_key->key(fallback_method);
+				key_to_use = session_entry->key();
+				fallback_key = session_entry->key(fallback_method);
 
 				dprintf(D_SECURITY|D_VERBOSE, "UDP: client normal key (proto %i): %p\n", key_to_use->getProtocol(), key_to_use);
 				dprintf(D_SECURITY|D_VERBOSE, "UDP: client fallback key (proto %i): %p\n", (fallback_key ? fallback_key->getProtocol() : 0), fallback_key);
@@ -1916,7 +1915,7 @@ SecManStartCommand::sendAuthInfo_inner()
 				}
 
 				// prepare the buffer to pass in udp header
-				MyString key_id = m_enc_key->id();
+				MyString key_id = session_entry->id();
 
 				// stick our command socket sinful string in there
 				char const* dcsss = global_dc_sinful();
@@ -1954,7 +1953,7 @@ SecManStartCommand::sendAuthInfo_inner()
 				}
 
 					// prepare the buffer to pass in udp header
-				MyString key_id = m_enc_key->id();
+				MyString key_id = session_entry->id();
 
 					// stick our command socket sinful string in there
 				char const* dcsss = global_dc_sinful();
@@ -2027,6 +2026,17 @@ SecManStartCommand::sendAuthInfo_inner()
 			m_errstack->push( "SECMAN", SECMAN_ERR_COMMUNICATIONS_ERROR,
 						"Failed to end classad message." );
 			return StartCommandFailed;
+		}
+	}
+
+	if (m_is_tcp && !m_new_session) {
+		// we are using this key
+		// If we're in non-blocking mode, the KeyCacheEntry could be
+		// removed from the session_cache and deleted while we wait for
+		// the server to respond. So make a copy of everything we need
+		// now, before we surrender control.
+		if (session_entry && session_entry->key()) {
+			m_private_key = new KeyInfo(*(session_entry->key()));
 		}
 	}
 
@@ -2314,13 +2324,6 @@ SecManStartCommand::authenticate_inner()
 					m_sock->set_peer_version(&ver_info);
 				}
 			}
-
-			// we are using this key
-			if (m_enc_key && m_enc_key->key()) {
-				m_private_key = new KeyInfo(*(m_enc_key->key()));
-			} else {
-				ASSERT (m_private_key == NULL);
-			}
 		}
 	}
         m_state = AuthenticateFinish;
@@ -2594,9 +2597,6 @@ SecManStartCommand::receivePostAuthInfo_inner()
 			}
 
 
-			ASSERT (m_enc_key == NULL);
-
-
 			// extract the session duration
 			char *dur = NULL;
 			m_auth_info.LookupString(ATTR_SEC_SESSION_DURATION, &dur);
@@ -2647,8 +2647,7 @@ SecManStartCommand::receivePostAuthInfo_inner()
 
 				// This makes a copy of the policy ad, so we don't
 				// have to. 
-			condor_sockaddr peer_addr = m_sock->peer_addr();
-			KeyCacheEntry tmp_key( sesid, &peer_addr, keyvec,
+			KeyCacheEntry tmp_key( sesid, m_sock->get_connect_addr(), keyvec,
 								   &m_auth_info, expiration_time,
 								   session_lease ); 
 			dprintf (D_SECURITY, "SECMAN: added session %s to cache for %s seconds (%ds lease).\n", sesid, dur, session_lease);
@@ -2940,8 +2939,7 @@ SecManStartCommand::WaitForSocketCallback()
 		m_sock->peer_description(),
 		(SocketHandlercpp)&SecManStartCommand::SocketCallback,
 		req_description.c_str(),
-		this,
-		ALLOW);
+		this);
 
 	if(reg_rc < 0) {
 		std::string msg;
@@ -3034,24 +3032,19 @@ SecMan::FinishKeyExchange(std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)> my
 	std::unique_ptr<unsigned char, decltype(&free)> der_peerkey(der_peerkey_raw, &free);
 
 		// We must feed d2i_PublicKey a valid EVP_PKEY with the right curve setup.
+	EVP_PKEY *peerkey_raw;
 
-	std::unique_ptr<EC_KEY, decltype(&EC_KEY_free)> ec_key(EC_KEY_new_by_curve_name(NID_X9_62_prime256v1), &EC_KEY_free);
-	if (!ec_key) {
-		errstack->push("SECMAN", SECMAN_ERR_INTERNAL,
-			"Failed to create EC key object for deserialization");
-		return false;
-	}
-	EVP_PKEY *peerkey_raw = EVP_PKEY_new();
+	// Note: due to the following bug:
+	// 	https://github.com/openssl/openssl/commit/2aa2beb06cc25c1f8accdc3d87b946205becfd86
+	// d2i_PublicKey is broken until OpenSSL 3.0.  Hence, we use the low-level deserialize...
+	
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+	peerkey_raw = EVP_EC_gen(const_cast<char *>("prime256v1"));
 	if (!peerkey_raw) {
 		errstack->push("SECMAN", SECMAN_ERR_INTERNAL,
 			"Failed to create pubkey object for deserialization");
 		return false;
 	}
-	// Note: due to the following bug:
-	// 	https://github.com/openssl/openssl/commit/2aa2beb06cc25c1f8accdc3d87b946205becfd86
-	// d2i_PublicKey is broken until OpenSSL 3.0.  Hence, we use the low-level deserialize...
-#if OPENSSL_VERSION_NUMBER >= 0x30000000L
-	EVP_PKEY_set1_EC_KEY(peerkey_raw, ec_key.get());
 	if (!(peerkey_raw = d2i_PublicKey(EVP_PKEY_base_id(mykey.get()), &peerkey_raw,
 		const_cast<const unsigned char**>(&der_peerkey_raw), peerkey_length))) {
 		errstack->push("SECMAN", SECMAN_ERR_INTERNAL,
@@ -3059,6 +3052,18 @@ SecMan::FinishKeyExchange(std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)> my
 		return false;
 	}
 #else
+	std::unique_ptr<EC_KEY, decltype(&EC_KEY_free)> ec_key(EC_KEY_new_by_curve_name(NID_X9_62_prime256v1), &EC_KEY_free);
+	if (!ec_key) {
+		errstack->push("SECMAN", SECMAN_ERR_INTERNAL,
+			"Failed to create EC key object for deserialization");
+		return false;
+	}
+	peerkey_raw = EVP_PKEY_new();
+	if (!peerkey_raw) {
+		errstack->push("SECMAN", SECMAN_ERR_INTERNAL,
+			"Failed to create pubkey object for deserialization");
+		return false;
+	}
 	EC_KEY *ec_key_copy = ec_key.get();
 	if (!o2i_ECPublicKey(&ec_key_copy, const_cast<const unsigned char**>(&der_peerkey_raw), peerkey_length)) {
 		errstack->push("SECMAN", SECMAN_ERR_INTERNAL,
@@ -3165,44 +3170,6 @@ SecManStartCommand::PopulateKeyExchange()
 }
 
 
-// Given a sinful string, clear out any associated sessions (incoming or outgoing)
-void
-SecMan::invalidateHost(const char * sin)
-{
-	StringList *keyids = session_cache->getKeysForPeerAddress(sin);
-	if( !keyids ) {
-		return;
-	}
-
-	keyids->rewind();
-	char const *keyid;
-	while( (keyid=keyids->next()) ) {
-		if (IsDebugVerbose(D_SECURITY)) {
-			dprintf (D_SECURITY, "KEYCACHE: removing session %s for %s\n", keyid, sin);
-		}
-		invalidateKey(keyid);
-	}
-	delete keyids;
-}
-
-void
-SecMan::invalidateByParentAndPid(const char * parent, int pid) {
-	StringList *keyids = session_cache->getKeysForProcess(parent,pid);
-	if( !keyids ) {
-		return;
-	}
-
-	keyids->rewind();
-	char const *keyid;
-	while( (keyid=keyids->next()) ) {
-		if (IsDebugVerbose(D_SECURITY)) {
-			dprintf (D_SECURITY, "KEYCACHE: removing session %s for %s pid %d\n", keyid, parent, pid);
-		}
-		invalidateKey(keyid);
-	}
-	delete keyids;
-}
-
 bool SecMan :: invalidateKey(const char * key_id)
 {
     bool removed = true;
@@ -3243,23 +3210,19 @@ bool SecMan :: invalidateKey(const char * key_id)
 void SecMan :: remove_commands(KeyCacheEntry * keyEntry)
 {
     if (keyEntry) {
-        char * commands = NULL;
-        keyEntry->policy()->LookupString(ATTR_SEC_VALID_COMMANDS, &commands);
-		std::string addr;
-		if (keyEntry->addr())
-			addr = keyEntry->addr()->to_sinful();
+        std::string commands;
+        keyEntry->policy()->LookupString(ATTR_SEC_VALID_COMMANDS, commands);
+        std::string addr = keyEntry->addr();
     
         // Remove all commands from the command map
-        if (commands) {
-            char keybuf[128];
+        if (!commands.empty() && !addr.empty()) {
+            std::string keybuf;
             StringList cmd_list(commands);
-            free(commands);
         
             cmd_list.rewind();
             char * cmd = NULL;
             while ( (cmd = cmd_list.next()) ) {
-                memset(keybuf, 0, 128);
-                sprintf (keybuf, "{%s,<%s>}", addr.c_str(), cmd);
+                formatstr (keybuf, "{%s,<%s>}", addr.c_str(), cmd);
                 command_map.remove(keybuf);
             }
         }
@@ -3272,8 +3235,6 @@ SecMan::sec_char_to_auth_method( const char* method ) {
 		return 0;
     } else if (!strcasecmp( method, "SSL" )  ) {
         return CAUTH_SSL;
-    } else if (!strcasecmp( method, "GSI" )  ) {
-		return CAUTH_GSI;
 	} else if ( !strcasecmp( method, "NTSSPI" ) ) {
 		return CAUTH_NTSSPI;
 	} else if ( !strcasecmp( method, "PASSWORD" ) ) {
@@ -3379,7 +3340,7 @@ SecMan::SecMan() :
 	m_cached_raw_protocol(false),
 	m_cached_use_tmp_sec_session(false),
 	m_cached_force_authentication(false),
-	m_cached_return_value(-1) {
+	m_cached_return_value(false) {
 
 	// the list of ClassAd attributes we need to resume a session
 	if (m_resume_proj.empty()) {
@@ -3631,13 +3592,11 @@ std::string SecMan::filterAuthenticationMethods(DCpermission perm, const std::st
 				continue;
 			}
 #endif
-#ifndef HAVE_EXT_GLOBUS
 			case CAUTH_GSI: {
-				dprintf(D_SECURITY, "Ignoring GSI method because it is not"
-					" available to this build of HTCondor.\n");
+				dprintf(D_SECURITY, "Ignoring GSI method because it is no"
+					" longer supported.\n");
 				continue;
 			}
-#endif
 #ifndef HAVE_EXT_KRB5
 			case CAUTH_KERBEROS: {
 				dprintf(D_SECURITY, "Ignoring KERBEROS method because it is not"
@@ -3780,7 +3739,7 @@ char* SecMan::my_parent_unique_id() {
 		_should_check_env_for_unique_id = false;
 
 		// look in the env for ENV_PARENT_ID
-		const char* envName = EnvGetName ( ENV_PARENT_ID );
+		const char* envName = ENV_CONDOR_PARENT_ID;
 		MyString value;
 		GetEnv( envName, value );
 
@@ -3904,11 +3863,22 @@ SecMan::CreateNonNegotiatedSecuritySession(DCpermission auth_level, char const *
 
 	ASSERT(sesid);
 
-	condor_sockaddr peer_addr;
-	if(peer_sinful && !peer_addr.from_sinful(peer_sinful)) {
-		dprintf(D_ALWAYS,"SECMAN: failed to create non-negotiated security session %s because "
-				"sock_sockaddr::from_sinful(%s) failed\n",sesid,peer_sinful);
-		return false;
+	std::string new_peer_sinful;
+	if (peer_sinful) {
+		// Rewrite the peer's sinful string when it has multiple addresses
+		// just like a future Sock will when connecting.
+		// This ensures the session will be found in command_map when it's
+		// not explicitly requested.
+		if (Sock::chooseAddrFromAddrs(peer_sinful, new_peer_sinful)) {
+			peer_sinful = new_peer_sinful.c_str();
+		} else {
+			Sinful sin(peer_sinful);
+			if (!sin.valid()) {
+				dprintf(D_ALWAYS,"SECMAN: failed to create non-negotiated security session %s because "
+				        "sinful '%s' is invalid\n",sesid,peer_sinful);
+				return false;
+			}
+		}
 	}
 
 	FillInSecurityPolicyAd( auth_level, &policy, false );
@@ -4019,7 +3989,7 @@ SecMan::CreateNonNegotiatedSecuritySession(DCpermission auth_level, char const *
 		keybuf = NULL;
 	}
 
-	KeyCacheEntry key(sesid,peer_sinful ? &peer_addr : NULL,keys_list,&policy,expiration_time,0);
+	KeyCacheEntry key(sesid,peer_sinful ? peer_sinful : "",keys_list,&policy,expiration_time,0);
 
 	if( !session_cache->insert(key) ) {
 		KeyCacheEntry *existing = NULL;
@@ -4064,8 +4034,11 @@ SecMan::CreateNonNegotiatedSecuritySession(DCpermission auth_level, char const *
 	// to the same key id (which is in the variable sesid)
 	dprintf(D_SECURITY, "SECMAN: now creating non-negotiated command mappings\n");
 
+	// If we don't have a sinful string, don't do any command mappings
 	std::string valid_coms;
-	policy.LookupString(ATTR_SEC_VALID_COMMANDS, valid_coms);
+	if (peer_sinful && peer_sinful[0]) {
+		policy.LookupString(ATTR_SEC_VALID_COMMANDS, valid_coms);
+	}
 	StringList coms(valid_coms.c_str());
 	char *p;
 

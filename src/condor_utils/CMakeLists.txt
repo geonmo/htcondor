@@ -27,6 +27,14 @@ if(BUILD_DATE)
 	set_source_files_properties(condor_version.cpp PROPERTIES COMPILE_DEFINITIONS BUILD_DATE="${BUILD_DATE}")
 endif()
 
+# publish python3 minor version and module extension in the param table
+if (PYTHON3_VERSION_MINOR)
+	set_source_files_properties(condor_config.cpp param_info.cpp PROPERTIES
+		 COMPILE_DEFINITIONS "PYTHON3_MODULE_SUFFIX=\"${PYTHON3_MODULE_SUFFIX}\";PYTHON3_VERSION_MINOR=${PYTHON3_VERSION_MINOR}"
+	)
+endif()
+
+
 # We need this .o statically linked into every exe for the version object
 # to parse.  Make this an object library to link everywhere.
 add_library(condor_version_obj STATIC condor_version.cpp)
@@ -137,6 +145,7 @@ adcluster.cpp
 adcluster.h
 ad_printmask.cpp
 ad_printmask.h
+print_format_tables.cpp
 ad_transforms.cpp
 ad_transforms.h
 AWSv4-utils.cpp
@@ -192,12 +201,10 @@ condor_common.cpp
 condor_config.cpp
 condor_crontab.cpp
 condor_crontab.h
-condor_environ.cpp
 CondorError.cpp
 CondorError.h
 condor_fsync.cpp
 condor_fsync.h
-condor_ftp.cpp
 condor_getcwd.cpp
 condor_getcwd.h
 condor_holdcodes.h
@@ -468,7 +475,6 @@ token_utils.cpp
 token_utils.h
 totals.cpp
 totals.h
-transfer_request.cpp
 translation_utils.cpp
 translation_utils.h
 tree.h
@@ -682,10 +688,10 @@ if ( LINUX )
   set_target_properties( condor_utils PROPERTIES LINK_FLAGS "-Wl,--wrap=dprintf" )
 endif()
 
-if (DLOPEN_GSI_LIBS OR DLOPEN_VOMS_LIBS)
+if (DLOPEN_VOMS_LIBS)
 	target_link_libraries(condor_utils PUBLIC ${RT_FOUND} ${CLASSADS_FOUND} ${KRB5_FOUND} ${MUNGE_FOUND} crypto )
 else()
-	target_link_libraries(condor_utils PUBLIC ${RT_FOUND} ${CLASSADS_FOUND} ${VOMS_FOUND} ${GLOBUS_FOUND} openssl crypto ${KRB5_FOUND} ${MUNGE_FOUND} )
+	target_link_libraries(condor_utils PUBLIC ${RT_FOUND} ${CLASSADS_FOUND} ${VOMS_FOUND} openssl crypto ${KRB5_FOUND} ${MUNGE_FOUND} )
 	if (WITH_SCITOKENS)
 		target_link_libraries(condor_utils PUBLIC SciTokens)
 	endif()

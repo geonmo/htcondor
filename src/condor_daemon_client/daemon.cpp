@@ -1588,7 +1588,16 @@ Daemon::findCmDaemon( const char* cm_name )
 			return false;
 		}
 		sinful.setHost(saddr.to_ip_string().c_str());
-		sinful.setAlias(fqdn.c_str());
+		// Older versions resolved a CNAME to the final A record FQDN and
+		// set that as the alias for the collector sinful here.
+		// This runs counter to how SSL host certificate validation is
+		// expected to work, and our setting of the alias for this Daemon
+		// object.
+		if(param_boolean("USE_COLLECTOR_HOST_CNAME", true)) {
+			sinful.setAlias(host);
+		} else {
+			sinful.setAlias(fqdn.c_str());
+		}
 		dprintf( D_HOSTNAME, "Found CM IP address and port %s\n",
 				 sinful.getSinful() ? sinful.getSinful() : "NULL" );
 		New_full_hostname(strdup(fqdn.c_str()));
@@ -2131,18 +2140,9 @@ Daemon::New_addr( char* str )
 			m_has_udp_command_port = false;
 		}
 		if( !sinful.getAlias() && _alias ) {
-			size_t len = strlen(_alias);
-				// If _alias is not equivalent to the canonical hostname,
-				// then stash it in the sinful address.  This is important
-				// in cases where we later verify that the certificate
-				// presented by the host we are connecting to matches
-				// the hostname we requested.
-			if( !_full_hostname || (strcmp(_alias,_full_hostname)!=0 && (strncmp(_alias,_full_hostname,len)!=0 || _full_hostname[len]!='.')) )
-			{
-				sinful.setAlias(_alias);
-				free(_addr);
-				_addr = strdup( sinful.getSinful() );
-			}
+			sinful.setAlias(_alias);
+			free(_addr);
+			_addr = strdup( sinful.getSinful() );
 		}
 	}
 

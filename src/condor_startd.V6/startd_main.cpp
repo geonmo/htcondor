@@ -26,9 +26,6 @@
  */
 #define _STARTD_NO_DECLARE_GLOBALS 1
 #include "startd.h"
-#include "vm_common.h"
-#include "VMManager.h"
-#include "VMRegister.h"
 #include "classadHistory.h"
 #include "misc_utils.h"
 #include "slot_builder.h"
@@ -254,8 +251,7 @@ main_init( int, char* argv[] )
 		// you need DAEMON permission.
 	daemonCore->Register_Command( ALIVE, "ALIVE", 
 								  command_handler,
-								  "command_handler", DAEMON,
-								  D_FULLDEBUG ); 
+								  "command_handler", DAEMON ); 
 	daemonCore->Register_Command( DEACTIVATE_CLAIM,
 								  "DEACTIVATE_CLAIM",  
 								  command_handler,
@@ -270,11 +266,6 @@ main_init( int, char* argv[] )
 	daemonCore->Register_Command( REQ_NEW_PROC, "REQ_NEW_PROC", 
 								  command_handler,
 								  "command_handler", DAEMON );
-	if (param_boolean("ALLOW_SLOT_PAIRING", false)) {
-		daemonCore->Register_Command( SWAP_CLAIM_AND_ACTIVATION, "SWAP_CLAIM_AND_ACTIVATION",
-								  command_with_opts_handler,
-								  "command_handler", DAEMON );
-	}
 
 		// These commands are special and need their own handlers
 		// READ permission commands
@@ -316,8 +307,7 @@ main_init( int, char* argv[] )
 	daemonCore->Register_Command( X_EVENT_NOTIFICATION,
 								  "X_EVENT_NOTIFICATION",
 								  command_x_event,
-								  "command_x_event", ALLOW,
-								  D_FULLDEBUG ); 
+								  "command_x_event", ALLOW ); 
 	daemonCore->Register_Command( PCKPT_ALL_JOBS, "PCKPT_ALL_JOBS", 
 								  command_pckpt_all,
 								  "command_pckpt_all", DAEMON );
@@ -365,36 +355,23 @@ main_init( int, char* argv[] )
 								  command_classad_handler,
 								  "command_classad_handler", WRITE );
 
-	// Virtual Machine commands
-	if( vmapi_is_host_machine() == TRUE ) {
-		daemonCore->Register_Command( VM_REGISTER,
-				"VM_REGISTER",
-				command_vm_register,
-				"command_vm_register", DAEMON,
-				D_FULLDEBUG );
-	}
-
 		// Commands from starter for VM universe
 	daemonCore->Register_Command( VM_UNIV_GAHP_ERROR, 
 								"VM_UNIV_GAHP_ERROR",
 								command_vm_universe, 
-								"command_vm_universe", DAEMON, 
-								D_FULLDEBUG );
+								"command_vm_universe", DAEMON );
 	daemonCore->Register_Command( VM_UNIV_VMPID, 
 								"VM_UNIV_VMPID",
 								command_vm_universe, 
-								"command_vm_universe", DAEMON, 
-								D_FULLDEBUG );
+								"command_vm_universe", DAEMON );
 	daemonCore->Register_Command( VM_UNIV_GUEST_IP, 
 								"VM_UNIV_GUEST_IP",
 								command_vm_universe, 
-								"command_vm_universe", DAEMON, 
-								D_FULLDEBUG );
+								"command_vm_universe", DAEMON );
 	daemonCore->Register_Command( VM_UNIV_GUEST_MAC, 
 								"VM_UNIV_GUEST_MAC",
 								command_vm_universe, 
-								"command_vm_universe", DAEMON, 
-								D_FULLDEBUG );
+								"command_vm_universe", DAEMON );
 
 	daemonCore->Register_CommandWithPayload( DRAIN_JOBS,
 								  "DRAIN_JOBS",
@@ -603,30 +580,6 @@ init_params( int first_time)
 	if (tmp) {
 		valid_cod_users = new StringList();
 		valid_cod_users->initializeFromString( tmp );
-	}
-
-	if( vmapi_is_virtual_machine() == TRUE ) {
-		vmapi_destroy_vmregister();
-	}
-	tmp.set(param("VMP_HOST_MACHINE"));
-	if (tmp) {
-		if (vmapi_is_my_machine(tmp.ptr())) {
-			dprintf( D_ALWAYS, "WARNING: VMP_HOST_MACHINE should be the hostname of host machine. In host machine, it doesn't need to be defined\n");
-		} else {
-			vmapi_create_vmregister(tmp.ptr());
-		}
-	}
-
-	if( vmapi_is_host_machine() == TRUE ) {
-		vmapi_destroy_vmmanager();
-	}
-	tmp.set(param("VMP_VM_LIST"));
-	if (tmp) {
-		if( vmapi_is_virtual_machine() == TRUE ) {
-			dprintf( D_ALWAYS, "WARNING: both VMP_HOST_MACHINE and VMP_VM_LIST are defined. Assuming this machine is a virtual machine\n");
-		}else {
-			vmapi_create_vmmanager(tmp.ptr());
-		}
 	}
 
 	InitJobHistoryFile( "STARTD_HISTORY" , "STARTD_PER_JOB_HISTORY_DIR");

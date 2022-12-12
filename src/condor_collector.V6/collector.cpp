@@ -332,14 +332,9 @@ void CollectorDaemon::Init()
 	daemonCore->Register_CommandWithPayload(QUERY_SUBMITTOR_ADS,"QUERY_SUBMITTOR_ADS",
 		receive_query_cedar,"receive_query_cedar",READ);
 	daemonCore->Register_CommandWithPayload(QUERY_LICENSE_ADS,"QUERY_LICENSE_ADS",
+	receive_query_cedar,"receive_query_cedar",READ);
+	daemonCore->Register_CommandWithPayload(QUERY_COLLECTOR_ADS,"QUERY_COLLECTOR_ADS",
 		receive_query_cedar,"receive_query_cedar",READ);
-	if(param_boolean("PROTECT_COLLECTOR_ADS", false)) {
-		daemonCore->Register_CommandWithPayload(QUERY_COLLECTOR_ADS,"QUERY_COLLECTOR_ADS",
-			receive_query_cedar,"receive_query_cedar",ADMINISTRATOR);
-	} else {
-		daemonCore->Register_CommandWithPayload(QUERY_COLLECTOR_ADS,"QUERY_COLLECTOR_ADS",
-			receive_query_cedar,"receive_query_cedar",READ);
-	}
 	daemonCore->Register_CommandWithPayload(QUERY_STORAGE_ADS,"QUERY_STORAGE_ADS",
 		receive_query_cedar,"receive_query_cedar",READ);
 	daemonCore->Register_CommandWithPayload(QUERY_ACCOUNTING_ADS,"QUERY_ACCOUNTING_ADS",
@@ -427,12 +422,12 @@ void CollectorDaemon::Init()
 		// restrictions to their contents (such as the user must be authenticated, not
 		// unmapped, and must match the Owner attribute).
 	daemonCore->Register_CommandWithPayload(UPDATE_OWN_SUBMITTOR_AD,"UPDATE_OWN_SUBMITTOR_AD",
-		receive_update,"receive_update", DAEMON, D_COMMAND, false,
+		receive_update,"receive_update", DAEMON, false,
 		0, &allow_perms);
 		//
 	daemonCore->Register_CommandWithPayload(IMPERSONATION_TOKEN_REQUEST, "IMPERSONATION_TOKEN_REQUEST",
 		schedd_token_request, "schedd_token_request", DAEMON,
-		D_COMMAND, true, 0, &allow_perms);
+		true, 0, &allow_perms);
 
     // install command handlers for updates with acknowledgement
 
@@ -857,12 +852,18 @@ int CollectorDaemon::receive_query_cedar_worker_thread(void *in_query_entry, Str
 
 		// If our peer is at least 8.9.3 and has NEGOTIATOR authz, then we'll
 		// trust it to handle our capabilities.
+		// Starting with 10.0.0, send the private attributes only if the
+		// client requests them.
 	bool filter_private_attrs = true;
 	auto *verinfo = sock->get_peer_version();
 	if (verinfo && verinfo->built_since_version(8, 9, 3) &&
 		(USER_AUTH_SUCCESS == daemonCore->Verify("send private attrs", NEGOTIATOR, *static_cast<ReliSock*>(sock), D_SECURITY|D_FULLDEBUG)))
 	{
-		filter_private_attrs = false;
+		if (verinfo->built_since_version(10, 0, 0)) {
+			filter_private_attrs = !wants_pvt_attrs;
+		} else {
+			filter_private_attrs = false;
+		}
 	}
 
 		// If our peer has ADMINISTRATOR authz and explicitly asks for
@@ -1435,19 +1436,19 @@ int CollectorDaemon::receive_update_expect_ack(int command,
         
     }
 
-    /* let the off-line plug-in have at it */
-	if(record)
-    offline_plugin_.update ( command, *record->m_publicAd );
+	if(record) {
+		offline_plugin_.update ( command, *record->m_publicAd );
 
 #if defined(UNIX) && !defined(DARWIN)
-	// JEF TODO Should we use the private ad here?
-    CollectorPluginManager::Update ( command, *record->m_publicAd );
+		// JEF TODO Should we use the private ad here?
+		CollectorPluginManager::Update ( command, *record->m_publicAd );
 #endif
 
-	if (viewCollectorTypes || UPDATE_STARTD_AD_WITH_ACK == command) {
-		forward_classad_to_view_collector(command,
+		if (viewCollectorTypes || UPDATE_STARTD_AD_WITH_ACK == command) {
+			forward_classad_to_view_collector(command,
 										  ATTR_MY_TYPE,
 										  record->m_pvtAd);
+		}
 	}
 
 	// let daemon core clean up the socket
@@ -1549,26 +1550,6 @@ void CollectorDaemon::process_query_public (AdTypes whichAds,
 	__resultLimit__ = INT_MAX; // no limit
 	if ( ! query->LookupInteger(ATTR_LIMIT_RESULTS, __resultLimit__) || __resultLimit__ <= 0) {
 		__resultLimit__ = INT_MAX; // no limit
-	}
-
-	// See if we should exclude Collector Ads from generic queries.  Still
-	// give them out for specific collector queries, which is registered as
-	// ADMINISTRATOR when PROTECT_COLLECTOR_ADS is true.  This setting is
-	// designed only for use at the UW, and as such this knob is not present
-	// in the param table.
-	if ((whichAds != COLLECTOR_AD) && param_boolean("PROTECT_COLLECTOR_ADS", false)) {
-		dprintf(D_FULLDEBUG, "Received query with generic type; filtering collector ads\n");
-		std::string modified_filter;
-		formatstr(modified_filter, "(%s) && (MyType =!= \"Collector\")",
-			ExprTreeToString(__filter__));
-		query->AssignExpr(ATTR_REQUIREMENTS,modified_filter.c_str());
-		__filter__ = query->LookupExpr(ATTR_REQUIREMENTS);
-		if ( __filter__ == NULL ) {
-			dprintf (D_ALWAYS, "Failed to parse modified filter: %s\n",
-				modified_filter.c_str());
-			return;
-		}
-		dprintf(D_FULLDEBUG,"Query after modification: *%s*\n",modified_filter.c_str());
 	}
 
 	// If ABSENT_REQUIREMENTS is defined, rewrite filter to filter-out absent ads 

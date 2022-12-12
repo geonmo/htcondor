@@ -34,10 +34,8 @@
 #include "gahp-client.h"
 
 #include "arcjob.h"
-#include "nordugridjob.h"
 #include "condorjob.h"
 #include "infnbatchjob.h"
-#include "boincjob.h"
 #include "condor_version.h"
 
 #include "ec2job.h"
@@ -244,14 +242,6 @@ Init()
 	JobType *new_type;
 
 	new_type = new JobType;
-	new_type->Name = strdup( "Nordugrid" );
-	new_type->InitFunc = NordugridJobInit;
-	new_type->ReconfigFunc = NordugridJobReconfig;
-	new_type->AdMatchFunc = NordugridJobAdMatch;
-	new_type->CreateFunc = NordugridJobCreate;
-	jobTypes.Append( new_type );
-	
-	new_type = new JobType;
 	new_type->Name = strdup( "ARC" );
 	new_type->InitFunc = ArcJobInit;
 	new_type->ReconfigFunc = ArcJobReconfig;
@@ -291,14 +281,6 @@ Init()
 	new_type->ReconfigFunc = INFNBatchJobReconfig;
 	new_type->AdMatchFunc = INFNBatchJobAdMatch;
 	new_type->CreateFunc = INFNBatchJobCreate;
-	jobTypes.Append( new_type );
-
-	new_type = new JobType;
-	new_type->Name = strdup( "BOINC" );
-	new_type->InitFunc = BoincJobInit;
-	new_type->ReconfigFunc = BoincJobReconfig;
-	new_type->AdMatchFunc = BoincJobAdMatch;
-	new_type->CreateFunc = BoincJobCreate;
 	jobTypes.Append( new_type );
 
 	new_type = new JobType;
@@ -342,7 +324,7 @@ Register()
 								  "FETCH_PROXY_DELEGATION",
 								  &FetchProxyDelegationHandler,
 								  "FetchProxyDelegationHandler",
-								  DAEMON, D_COMMAND, true );
+								  DAEMON, true );
 
 	Reconfig();
 }

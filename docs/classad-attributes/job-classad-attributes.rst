@@ -160,13 +160,6 @@ all attributes.
 :classad-attribute:`BlockWrites`
     The integer number of blocks written to disk for this job.
 
-:classad-attribute:`BoincAuthenticatorFile`
-    Used for grid type boinc jobs; a string taken from the definition of
-    the submit description file command
-    **boinc_authenticator_file** :index:`boinc_authenticator_file<single: boinc_authenticator_file; submit commands>`.
-    Defines the path and file name of the file containing the
-    authenticator string to use to authenticate to the BOINC service.
-
 :classad-attribute:`CkptArch`
     String describing the architecture of the machine this job executed
     on at the time it last produced a checkpoint. If the job has never
@@ -219,9 +212,12 @@ all attributes.
     when it exits.
 
 :classad-attribute:`CompletionDate`
-    The time when the job completed, or the value 0 if the job has not
+    The time when the job completed, or undefined if the job has not
     yet completed. Measured in the number of seconds since the epoch
-    (00:00:00 UTC, Jan 1, 1970).
+    (00:00:00 UTC, Jan 1, 1970). Note that older versions of HTCondor
+    initialzed ``CompletionDate`` to the integer 0, so job ads from
+    older versions of HTCondor might have a 0 CompletionDate for
+    jobs which haven't completed.
 
 :classad-attribute:`ConcurrencyLimits`
     A string list, delimited by commas and space characters. The items
@@ -319,6 +315,19 @@ all attributes.
     If ``DAGManNodesLog`` is not defined, it has no effect. The value of
     ``DAGManNodesMask`` does not affect events recorded in the job event
     log file referred to by ``UserLog``.
+
+:classad-attribute:`DeferralPrepTime`
+    An integer representing the number of seconds before the jobs ``DeferralTime``
+    to which the job may be matched with a machine.
+
+:classad-attribute:`DeferralTime`
+    A Unix Epoch timestamp that represents the exact time HTCondor should
+    attempt to begin executing the job.
+
+:classad-attribute:`DeferralWindow`
+    An integer representing the number of seconds after the jobs ``DeferralTime``
+    to allow the job to arrive at the execute machine before automatically being
+    evicted due to missing its ``DeferralTime``.
 
 :index:`DELEGATE_JOB_GSI_CREDENTIALS_LIFETIME`
 
@@ -687,15 +696,12 @@ all attributes.
     |                                  | encountered when                    |                          |
     |                                  | transferring files.                 |                          |
     +----------------------------------+-------------------------------------+--------------------------+
-    | | 12                             | The *condor_starter* or             | The Unix errno number.   |
-    | | [DownloadFileError]            | *condor_shadow* failed              |                          |
-    |                                  | to receive or write job             |                          |
-    |                                  | files.                              |                          |
+    | | 12                             | An error occurred while             | The Unix errno number.   |
+    | | [TransferOutputError]          | transferring job output files       |                          |
+    |                                  | or checkpoint files.                |                          |
     +----------------------------------+-------------------------------------+--------------------------+
-    | | 13                             | The *condor_starter* or             | The Unix errno number.   |
-    | | [UploadFileError]              | *condor_shadow* failed              |                          |
-    |                                  | to read or send job                 |                          |
-    |                                  | files.                              |                          |
+    | | 13                             | An error occurred while             | The Unix errno number.   |
+    | | [TransferInputError]           | transferring job input files.       |                          |
     +----------------------------------+-------------------------------------+--------------------------+
     | | 14                             | The initial working                 | The Unix errno number.   |
     | | [IwdError]                     | directory of the job                |                          |
@@ -1138,7 +1144,7 @@ all attributes.
     of time will be the minimum of this value and the execute machine's
     configuration variable ``KILLING_TIMEOUT``
 
-:classad-attribute:`LastMatchTime``
+:classad-attribute:`LastMatchTime`
     An integer containing the epoch time when the job was last
     successfully matched with a resource (gatekeeper) Ad.
 
@@ -2051,6 +2057,34 @@ all attributes.
     user's credential is part of.
 
 
+The following job ClassAd attributes appear in the job ClassAd only for
+declared cron jobs. These represent various allotted job start times that
+will be used to calculate the jobs ``DeferralTime``. These attributes can
+be represented as an integer, a list of integers, a range of integers, a
+step (intervals of a range), or an ``*`` for all allowed values. For more
+information visit :ref:`users-manual/time-scheduling-for-job-execution:cronTab scheduling`.
+
+:classad-attribute:`CronMinute`
+    The minutes in an hour when the cron job is allowed to start running.
+    Represented by the numerical values 0 to 59.
+
+:classad-attribute:`CronHour`
+    The hours in the day when the cron job is allowed to start running.
+    Represented by the numerical values 0 to 23.
+
+:classad-attribute:`CronDayOfMonth`
+    The days of the month when the cron job is allowed to start running.
+    Represented by the numerical values 1 to 31.
+
+:classad-attribute:`CronMonth`
+    The months of the year when the cron job is allowed to start running.
+    Represented by numerical values 1 to 12.
+
+:classad-attribute:`CronDayOfWeek`
+    The days of the week when the cron job is allowed to start running.
+    Represented by numerical values 0 to 7. Both 0 and 7 represent Sunday.
+
+
 The following job ClassAd attributes are relevant only for **vm**
 universe jobs.
 
@@ -2102,6 +2136,12 @@ information for the DAG.
     The number of DAG nodes that are not ready to run. This is a node in
     which one or more of the parent nodes has not yet finished.
 
+:classad-attribute:`DAG_NodesFutile`
+    The number of DAG nodes that will never run due to the failure of an
+    ancestor node. Where an ancestor is a node that a another node
+    depends on either directly or indirectly through a chain of PARENT/CHILD
+    relationships.
+
 :classad-attribute:`DAG_Status`
     The overall status of the DAG, with the same values as the macro
     ``$DAG_STATUS`` used in DAGMan FINAL nodes.
@@ -2112,7 +2152,27 @@ information for the DAG.
     | 3                                    | the DAG has been aborted by an       |
     |                                      | ABORT-DAG-ON specification           |
     +--------------------------------------+--------------------------------------+
+	
+The following job ClassAd attributes appear in the job ClassAd only for
+the *condor_dagman* job submitted under DAGMan. They represent job process
+information about the DAG. These values will reset when a DAG is run via
+rescue and be retained when a DAG is run via recovery mode.
 
+:classad-attribute:`DAG_JobsSubmitted`
+    The total number of job processes submitted by all the nodes in the DAG.
+
+:classad-attribute:`DAG_JobsIdle`
+    The number of job processes currently idle within the DAG. 
+
+:classad-attribute:`DAG_JobsHeld`
+    The number of job processes currently held within the DAG.
+
+:classad-attribute:`DAG_JobsRunning`
+    The number of job processes currently executing within the DAG.
+
+:classad-attribute:`DAG_JobsCompleted`
+    The total number of job processes within the DAG that have successfully
+    completed.
 
 The following job ClassAd attributes do not appear in the job ClassAd as
 kept by the *condor_schedd* daemon. They appear in the job ClassAd

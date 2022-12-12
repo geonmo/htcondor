@@ -55,8 +55,10 @@
 #include "classad_helpers.h"
 #include "iso_dates.h"
 #include "jobsets.h"
+#include "exit.h"
 #include <algorithm>
 #include <param_info.h>
+#include <shortfile.h>
 
 #include "ScheddPlugin.h"
 
@@ -354,14 +356,6 @@ bool operator()(const prio_rec& a, const prio_rec& b) const
 	}
 
 	 /* here, all job_prios are both equal */
-
-	 /* check for job submit times */
-	 if( a.qdate < b.qdate ) {
-		  return true;
-	 }
-	 if( a.qdate > b.qdate ) {
-		  return false;
-	 }
 
 	 /* go in order of cluster id */
 	if ( a.id.cluster < b.id.cluster )
@@ -722,7 +716,7 @@ ClusterCleanup(int cluster_id)
 	}
 }
 
-int GetSchedulerCapabilities(int /*mask*/, ClassAd & reply)
+int GetSchedulerCapabilities(int mask, ClassAd & reply)
 {
 	reply.Assign( "LateMaterialize", scheduler.getAllowLateMaterialize() );
 	reply.Assign("LateMaterializeVersion", 2);
@@ -732,8 +726,21 @@ int GetSchedulerCapabilities(int /*mask*/, ClassAd & reply)
 	if (cmds && (cmds->size() > 0)) {
 		reply.Insert("ExtendedSubmitCommands", cmds->Copy());
 	}
-	dprintf(D_ALWAYS, "GetSchedulerCapabilities called, returning\n");
-	dPrintAd(D_ALWAYS, reply);
+	auto helpfile = scheduler.getExtendedSubmitHelpFile();
+	if ( ! helpfile.empty()) {
+		// if EXTENDED_SUBMIT_HELPFILE is not a URL, assume it is a small local file and return the content
+		if ((mask & GetsScheddCapabilities_F_HELPTEXT) && ! IsUrl(helpfile.c_str())) {
+			std::string contents;
+			htcondor::readShortFile(helpfile, contents);
+			reply.Assign("ExtendedSubmitHelp", contents);
+		} else {
+			reply.Assign("ExtendedSubmitHelpFile", helpfile);
+		}
+	}
+	if (IsDebugVerbose(D_COMMAND)) {
+		std::string buf;
+		dprintf(D_COMMAND | D_VERBOSE, "GetSchedulerCapabilities(%d) returning:\n%s", mask, formatAd(buf, reply, "\t"));
+	}
 	return 0;
 }
 
@@ -1966,7 +1973,7 @@ InitClusterAd (
 		if ( ! jobset) {
 			name2 = JobSets::makeAlias(name1, cad->ownerinfo->name);
 			unsigned int & setId = needed_sets[name2];
-			if (!setId || (setId > cad->jid.cluster)) { setId = cad->jid.cluster; }
+			if (!setId || (setId > (unsigned) cad->jid.cluster)) { setId = cad->jid.cluster; }
 
 			// set set_id header field to 0 to mean 'figure out the id later'
 			// and if it was already set to non-zero,  that means the ad has a bogus attribute value
@@ -2387,15 +2394,6 @@ InitJobQueue(const char *job_queue_name,int max_historical_logs)
 					JobQueueDirty = true;
 				}
 			}
-			// AsyncXfer: Delete in-job output transfer attributes
-			if( ad->LookupInteger(ATTR_JOB_TRANSFERRING_OUTPUT,transferring_output) ) {
-				ad->Delete(ATTR_JOB_TRANSFERRING_OUTPUT);
-				JobQueueDirty = true;
-			}
-			if( ad->LookupInteger(ATTR_JOB_TRANSFERRING_OUTPUT_TIME,transferring_output) ) {
-				ad->Delete(ATTR_JOB_TRANSFERRING_OUTPUT_TIME);
-				JobQueueDirty = true;
-			}
 			if( ad->LookupString(ATTR_CLAIM_ID, buffer) ) {
 				ad->Delete(ATTR_CLAIM_ID);
 				PrivateAttrs[key][ATTR_CLAIM_ID] = buffer;
@@ -2403,10 +2401,6 @@ InitJobQueue(const char *job_queue_name,int max_historical_logs)
 			if( ad->LookupString(ATTR_CLAIM_IDS, buffer) ) {
 				ad->Delete(ATTR_CLAIM_IDS);
 				PrivateAttrs[key][ATTR_CLAIM_IDS] = buffer;
-			}
-			if( ad->LookupString(ATTR_PAIRED_CLAIM_ID, buffer) ) {
-				ad->Delete(ATTR_PAIRED_CLAIM_ID);
-				PrivateAttrs[key][ATTR_PAIRED_CLAIM_ID] = buffer;
 			}
 
 			// count up number of procs in cluster, update ClusterSizeHashTable
@@ -3427,63 +3421,6 @@ handle_q(int cmd, Stream *sock)
 	return 0;
 }
 
-int GetMyProxyPassword (int, int, char **);
-
-int get_myproxy_password_handler(int /*i*/, Stream *socket) {
-
-	//	For debugging
-//	DebugFP = stderr;
-
-	int cluster_id = -1;
-	int proc_id = -1;
-	int result;
-
-	socket->decode();
-
-	result = socket->code(cluster_id);
-	if( !result ) {
-		dprintf(D_ALWAYS, "get_myproxy_password_handler: Failed to recv cluster_id.\n");
-		return -1;
-	}
-
-	result = socket->code(proc_id);
-	if( !result ) {
-		dprintf(D_ALWAYS, "get_myproxy_password_handler: Failed to recv proc_id.\n");
-		return -1;
-	}
-
-	char pwd[] = "";
-	char * password = pwd;
-
-	if (GetMyProxyPassword (cluster_id, proc_id, &password) != 0) {
-		// Try not specifying a proc
-		if (GetMyProxyPassword (cluster_id, 0, &password) != 0) {
-			//return -1;
-			// Just return empty string if can't find password
-		}
-	}
-
-
-	socket->end_of_message();
-	socket->encode();
-	if( ! socket->code(password) ) {
-		dprintf( D_ALWAYS,
-			"get_myproxy_password_handler: Failed to send result.\n" );
-		return -1;
-	}
-
-	if( ! socket->end_of_message() ) {
-		dprintf( D_ALWAYS,
-			"get_myproxy_password_handler: Failed to send end of message.\n");
-		return -1;
-	}
-
-
-	return 0;
-
-}
-
-
 int
 InitializeConnection( const char *  /*owner*/, const char *  /*domain*/ )
 {
@@ -3862,8 +3799,6 @@ int NewProcFromAd (ClassAd * job, int ProcId, JobQueueJob * ClusterAd, SetAttrib
 
 #endif // 0
 
-int 	DestroyMyProxyPassword (int cluster_id, int proc_id);
-
 int DestroyProc(int cluster_id, int proc_id)
 {
 	JobQueueKeyBuf		key;
@@ -3962,9 +3897,6 @@ int DestroyProc(int cluster_id, int proc_id)
 	if ( ! clusterad) {
 		clusterad = GetClusterAd(ad->jid);
 	}
-
-	// ckireyev: Destroy MyProxyPassword
-	(void)DestroyMyProxyPassword (cluster_id, proc_id);
 
 	JobQueue->DestroyClassAd(key);
 
@@ -4154,9 +4086,6 @@ int DestroyCluster(int /*cluster_id*/, const char* /*reason*/)
 	}
 
 	ClusterCleanup(cluster_id);
-	
-	// Destroy myproxy password
-	DestroyMyProxyPassword (cluster_id, -1);
 
 	JobQueueDirty = true;
 
@@ -5618,192 +5547,6 @@ SetTimerAttribute( int cluster, int proc, const char *attr_name, int dur )
 	return rc;
 }
 
-char * simple_encode (int key, const char * src);
-char * simple_decode (int key, const char * src);
-
-// Store a simply-encoded attribute
-int
-SetMyProxyPassword (int cluster_id, int proc_id, const char *pwd) {
-
-	// This is sortof a hack
-	if (proc_id == -1)	{
-		proc_id = 0;
-	}
-
-	// Create filename
-	std::string filename;
-	formatstr( filename, "%s/mpp.%d.%d", Spool, cluster_id, proc_id);
-
-	// Swith to root temporarily
-	priv_state old_priv = set_root_priv();
-	// Delete the file
-	struct stat stat_buff;
-	if (stat (filename.c_str(), &stat_buff) == 0) {
-		// If the file exists, delete it
-		if (unlink (filename.c_str()) && errno != ENOENT) {
-			set_priv(old_priv);
-			return -1;
-		}
-	}
-
-	// Create the file
-	int fd = safe_open_wrapper_follow(filename.c_str(), O_CREAT | O_WRONLY, S_IREAD | S_IWRITE);
-	if (fd < 0) {
-		set_priv(old_priv);
-		return -1;
-	}
-
-	char * encoded_value = simple_encode (cluster_id+proc_id, pwd);
-	int len = (int)strlen(encoded_value);
-	if (write (fd, encoded_value, len) != len) {
-		set_priv(old_priv);
-		free(encoded_value);
-		close(fd);
-		return -1;
-	}
-	close (fd);
-
-	// Switch back to non-priviledged user
-	set_priv(old_priv);
-
-	free (encoded_value);
-
-	if (SetAttribute(cluster_id, proc_id,
-					 ATTR_MYPROXY_PASSWORD_EXISTS, "TRUE") < 0) {
-		EXCEPT("Failed to record fact that MyProxyPassword file exists on %d.%d",
-			   cluster_id, proc_id);
-	}
-
-	return 0;
-
-}
-
-
-int
-DestroyMyProxyPassword( int cluster_id, int proc_id )
-{
-	bool val = false;
-	if (GetAttributeBool(cluster_id, proc_id,
-						 ATTR_MYPROXY_PASSWORD_EXISTS, &val) < 0 ||
-		!val) {
-			// It doesn't exist, nothing to destroy.
-		return 0;
-	}
-
-	std::string filename;
-	formatstr( filename, "%s%cmpp.%d.%d", Spool, DIR_DELIM_CHAR,
-					  cluster_id, proc_id );
-
-  	// Swith to root temporarily
-	priv_state old_priv = set_root_priv();
-
-	// Delete the file
-	struct stat stat_buff;
-	if( stat(filename.c_str(), &stat_buff) == 0 ) {
-			// If the file exists, delete it
-		if( unlink( filename.c_str()) < 0 && errno != ENOENT ) {
-			dprintf( D_ALWAYS, "unlink(%s) failed: errno %d (%s)\n",
-					 filename.c_str(), errno, strerror(errno) );
-		 	set_priv(old_priv);
-			return -1;
-
-		}
-		dprintf( D_FULLDEBUG, "Destroyed MPP %d.%d: %s\n", cluster_id, 
-				 proc_id, filename.c_str() );
-	}
-
-	// Switch back to non-root
-	set_priv(old_priv);
-
-	if (SetAttribute(cluster_id, proc_id,
-					 ATTR_MYPROXY_PASSWORD_EXISTS, "FALSE") < 0) {
-		EXCEPT("Failed to record fact that MyProxyPassword file does no exists on %d.%d",
-			   cluster_id, proc_id);
-	}
-
-	return 0;
-}
-
-
-int GetMyProxyPassword (int cluster_id, int proc_id, char ** value) {
-	// Create filename
-
-	// Swith to root temporarily
-	priv_state old_priv = set_root_priv();
-	
-	std::string filename;
-	formatstr( filename, "%s/mpp.%d.%d", Spool, cluster_id, proc_id);
-	int fd = safe_open_wrapper_follow(filename.c_str(), O_RDONLY);
-	if (fd < 0) {
-		set_priv(old_priv);
-		return -1;
-	}
-
-	char buff[MYPROXY_MAX_PASSWORD_BUFLEN];
-	int bytes = read (fd, buff, sizeof(buff) - 1);
-	if( bytes < 0 ) {
-		close(fd);
-		return -1;
-	}
-	buff [bytes] = '\0';
-
-	close (fd);
-
-	// Switch back to non-priviledged user
-	set_priv(old_priv);
-
-	*value = simple_decode (cluster_id + proc_id, buff);
-	return 0;
-}
-
-
-
-
-static const char * mesh = "Rr1aLvzki/#6`QeNoWl^\"(!x\'=OE3HBn [A)GtKu?TJ.mdS9%Fh;<\\+w~4yPDIq>2Ufs$Xc_@g0Y5Mb|{&*}]7,CpV-j:8Z";
-
-char * simple_encode (int key, const char * src) {
-
-  char * result = (char*)strdup (src);
-
-  unsigned int i= 0;
-  for (; i<strlen (src); i++) {
-    int c = (int)src[i]-(int)' ';
-    c=(c+key)%strlen(mesh);
-    result[i]=mesh[c];
-  }
-
-  return result;
-}
-
-char * simple_decode (int key, const char * src) {
-  char * result = (char*)strdup (src);
-
-  char buff[2];
-  buff[1]='\0';
-
-  unsigned int i= 0;
-  unsigned int j =0;
-  unsigned int c =0;
-  unsigned int cm = (unsigned int)strlen(mesh);
-
-  for (; j<strlen(src); j++) {
-
-	//
-    for (i=0; i<cm; i++) {
-      if (mesh[i] == src[j]) {
-		c = i;
-		break;
-		}
-    }
-
-    c = (c+cm-(key%cm))%cm;
-    
-    snprintf(buff, 2, "%c", c+' ');
-    result[j]=buff[0];
-    
-  }
-  return result;
-}
 
 // start a transaction, or continue one if we already started it
 int TransactionWatcher::BeginOrContinue(int id) {
@@ -5887,6 +5630,18 @@ CheckTransaction( const std::list<std::string> &newAdKeys,
 		return 0;
 	}
 
+	// in 9.4.0 we started applying transforms to the cluster ad of late materiaization factories
+	// We did this because transforms must be applied before submit requirements are evaluated (HTCONDOR-756)
+	// This resulted in a problem (HTCONDOR-1369) where a transform of TransferInput would prevent
+	// materialization of per-job values for TransferInput. Beginning with 10.0 we will transform proc ads
+	// in addition to cluster ads for factory jobs. (i.e. The transforms will be applied twice for each late-mat job.)
+	// The knob below is so admins can revert to the behavior of applying transforms to the factory cluster only
+	// even though this has the side effect of overriding materialization of those attributes in the job ads.
+	// An admin might do this if they want to insure that late materialization will not fail submit requirments
+	// In effect, they are making attributes that are set by a submit transform pseudo-immutable. (the root cause of HTCONDOR-1369)
+	// TODO: make it possible to declare only some transforms as cluster-only
+	bool transform_factory_and_job = param_boolean("TRANSFORM_FACTORY_AND_JOB_ADS", true);
+
 	for( std::list<std::string>::const_iterator it = newAdKeys.begin(); it != newAdKeys.end(); ++it ) {
 		bool do_transforms = true;
 		ClassAd tmpAd, tmpAd2;
@@ -5911,7 +5666,12 @@ CheckTransaction( const std::list<std::string> &newAdKeys,
 				tmpAd.Assign(ATTR_JOB_STATUS, IDLE);
 				tmpAd.ChainToAd(&tmpAd2);
 			}
-			xform_attrs = &tmpAttrs; // we want to get back the set of transformed attributes
+			// if we are going to transform the factory only, then we want to know
+			// what attrbutes are transformed in the cluster/factory so we can disable
+			// materialization of those attributes in the proc ads
+			if ( ! transform_factory_and_job) {
+				xform_attrs = &tmpAttrs;
+			}
 		} else {
 			JobQueueKeyBuf clusterJid( jid.cluster, -1 );
 			JobQueue->AddAttrsFromTransaction( clusterJid, tmpAd );
@@ -5923,8 +5683,9 @@ CheckTransaction( const std::list<std::string> &newAdKeys,
 				// we don't need to unchain - it's a stack object and won't live longer than this function.
 				tmpAd.ChainToAd(clusterAd);
 				if (static_cast<JobQueueCluster*>(clusterAd)->factory) {
-					// late materialize jobs have already been transformed
-					do_transforms = false;
+					// we already transformed the factory cluster ad, disable transforms
+					// for proc ads if ...and_jobs is false
+					do_transforms = transform_factory_and_job;
 				}
 			}
 		}
@@ -6781,7 +6542,7 @@ AbortTransactionAndRecomputeClusters()
 
 
 int
-GetAttributeFloat(int cluster_id, int proc_id, const char *attr_name, float *val)
+GetAttributeFloat(int cluster_id, int proc_id, const char *attr_name, double *val)
 {
 	ClassAd	*ad;
 	JobQueueKeyBuf	key;
@@ -7054,7 +6815,7 @@ DeleteAttribute(int cluster_id, int proc_id, const char *attr_name)
 }
 
 // 
-int QmgmtHandleSendJobsetAd(int cluster_id, ClassAd & ad, int flags, int & terrno)
+int QmgmtHandleSendJobsetAd(int cluster_id, ClassAd & ad, int /*flags*/, int & terrno)
 {
 	// check to see if the schedd is permitting jobsets
 	if ( ! scheduler.jobSets) {
@@ -7674,7 +7435,6 @@ dollarDollarExpand(int cluster_id, int proc_id, ClassAd *ad, ClassAd *startd_ad,
 			}
 		}
 
-
 		if ( startd_ad && job_universe != CONDOR_UNIVERSE_GRID ) {
 			// Produce an environment description that is compatible with
 			// whatever the starter expects.
@@ -7682,82 +7442,40 @@ dollarDollarExpand(int cluster_id, int proc_id, ClassAd *ad, ClassAd *startd_ad,
 			//  after a disconnection (job lease).  In this case we don't
 			//  have a startd_ad!
 
-			Env env_obj;
 
-			char *opsys = NULL;
-			startd_ad->LookupString( ATTR_OPSYS, &opsys);
-			char *startd_version = NULL;
-			startd_ad->LookupString( ATTR_VERSION, &startd_version);
-			CondorVersionInfo ver_info(startd_version);
-
-			MyString env_error_msg;
-			if(!env_obj.MergeFrom(expanded_ad,&env_error_msg) ||
-			   !env_obj.InsertEnvIntoClassAd(expanded_ad,&env_error_msg,opsys,&ver_info))
+			// check for a job that has a V1 environment only, and the target OS uses a different separator
+			// HTCondor 9.x and earlier does not honor EnvDelim in MergeFrom(Ad) so we have to re-write Env
+			// for the Opsys of the STARTD.
+			// TODO: add a version check for STARTD's that honor the ATTR_JOB_ENV_V1_DELIM on ingestion
+			if (expanded_ad->Lookup(ATTR_JOB_ENV_V1) && ! expanded_ad->LookupExpr(ATTR_JOB_ENVIRONMENT))
 			{
-				attribute_not_found = true;
-				std::string hold_reason;
-				formatstr(hold_reason,
-					"Failed to convert environment to target syntax"
-					" for starter (opsys=%s): %s",
-					opsys ? opsys : "NULL",env_error_msg.c_str());
+				Env env_obj;
 
-
-				dprintf( D_ALWAYS, 
-					"Putting job %d.%d on hold - cannot convert environment"
-					" to target syntax for starter (opsys=%s): %s\n",
-					cluster_id, proc_id, opsys ? opsys : "NULL",
-						 env_error_msg.c_str() );
-
-				// SetAttribute does security checks if Q_SOCK is
-				// not NULL.  So, set Q_SOCK to be NULL before
-				// placing the job on hold so that SetAttribute
-				// knows this request is not coming from a client.
-				// Then restore Q_SOCK back to the original value.
-
-				QmgmtPeer* saved_sock = Q_SOCK;
-				Q_SOCK = NULL;
-				holdJob(cluster_id, proc_id, hold_reason.c_str());
-				Q_SOCK = saved_sock;
+				// compare the delim that is natural to the startd to the delim that the job is currently using
+				// if they differ, and the job is using V1 environment (and STARTD is earlier than X.Y) we
+				// have to re-write the Env attribute and the EnvDelim attributes for target OS
+				std::string opsys;
+				startd_ad->LookupString(ATTR_OPSYS, opsys);
+				char target_delim = env_obj.GetEnvV1Delimiter(opsys.c_str());
+				char my_delim = env_obj.GetEnvV1Delimiter(*expanded_ad);
+				if (my_delim != target_delim) {
+					std::string env_error_msg;
+					// ingest using the current delim as specified in the job
+					bool env_ok = env_obj.MergeFrom(expanded_ad, env_error_msg);
+					if (env_ok) {
+						// write the environment back into the job with the OPSYS correct delimiter
+						env_ok = env_obj.InsertEnvV1IntoClassAd(*expanded_ad, env_error_msg, target_delim);
+						if ( ! env_ok) {
+							dprintf( D_FULLDEBUG, "Setting attr Environment because attr Env cannot be converted to opsys=%s : %s\n",
+								opsys.c_str(), env_error_msg.c_str());
+							// write a V2 Environment attribute into the job,
+							// this will take precedence over Env for STARTD's later than 6.7
+							env_ok = env_obj.InsertEnvIntoClassAd(*expanded_ad);
+						}
+					}
+				}
 			}
-
-
-			// Now convert the arguments to a form understood by the starter.
-			ArgList arglist;
-			std::string arg_error_msg;
-			if(!arglist.AppendArgsFromClassAd(expanded_ad,arg_error_msg) ||
-			   !arglist.InsertArgsIntoClassAd(expanded_ad,&ver_info,arg_error_msg))
-			{
-				attribute_not_found = true;
-				std::string hold_reason;
-				formatstr(hold_reason,
-					"Failed to convert arguments to target syntax"
-					" for starter: %s",
-					arg_error_msg.c_str());
-
-
-				dprintf( D_ALWAYS, 
-					"Putting job %d.%d on hold - cannot convert arguments"
-					" to target syntax for starter: %s\n",
-					cluster_id, proc_id,
-					arg_error_msg.c_str() );
-
-				// SetAttribute does security checks if Q_SOCK is
-				// not NULL.  So, set Q_SOCK to be NULL before
-				// placing the job on hold so that SetAttribute
-				// knows this request is not coming from a client.
-				// Then restore Q_SOCK back to the original value.
-
-				QmgmtPeer* saved_sock = Q_SOCK;
-				Q_SOCK = NULL;
-				holdJob(cluster_id, proc_id, hold_reason.c_str());
-				Q_SOCK = saved_sock;
-			}
-
-
-			if(opsys) free(opsys);
-			if(startd_version) free(startd_version);
 		}
-
 		if ( attribute_value ) free(attribute_value);
 		if ( bigbuf2 ) free (bigbuf2);
 
@@ -8426,7 +8144,6 @@ int get_job_prio(JobQueueJob *job, const JOB_ID_KEY & jid, void *)
             post_job_prio1, 
             post_job_prio2;
     int     job_status;
-    int     q_date;
     char    owner[100];
     int     cur_hosts;
     int     max_hosts;
@@ -8505,7 +8222,6 @@ int get_job_prio(JobQueueJob *job, const JOB_ID_KEY & jid, void *)
     }
 
     job->LookupInteger(ATTR_JOB_PRIO, job_prio);
-    job->LookupInteger(ATTR_Q_DATE, q_date);
 
 	char * powner = owner;
 	int cremain = sizeof(owner);
@@ -8551,7 +8267,6 @@ int get_job_prio(JobQueueJob *job, const JOB_ID_KEY & jid, void *)
     PrioRec[N_PrioRecs].post_job_prio1 = post_job_prio1;
     PrioRec[N_PrioRecs].post_job_prio2 = post_job_prio2;
     PrioRec[N_PrioRecs].status         = job_status;
-    PrioRec[N_PrioRecs].qdate          = q_date;
     PrioRec[N_PrioRecs].not_runnable   = false;
     PrioRec[N_PrioRecs].matched        = false;
 	if ( auto_id == -1 ) {
@@ -8671,7 +8386,7 @@ int mark_idle(JobQueueJob *job, const JobQueueKey& /*key*/, void* /*pvArg*/)
 			// Schedd must have died before committing this job's wall
 			// clock time.  So, commit the wall clock saved in the
 			// wall clock checkpoint.
-		float wall_clock = 0.0;
+		double wall_clock = 0.0;
 		GetAttributeFloat(cluster,proc,ATTR_JOB_REMOTE_WALL_CLOCK,&wall_clock);
 		wall_clock += wall_clock_ckpt;
 		BeginTransaction();
@@ -8682,10 +8397,10 @@ int mark_idle(JobQueueJob *job, const JobQueueKey& /*key*/, void* /*pvArg*/)
 			// potentially double-count
 		DeleteAttribute(cluster,proc,ATTR_SHADOW_BIRTHDATE);
 
-		float slot_weight = 1;
+		double slot_weight = 1;
 		GetAttributeFloat(cluster, proc,
 						  ATTR_JOB_MACHINE_ATTR_SLOT_WEIGHT0,&slot_weight);
-		float slot_time = 0;
+		double slot_time = 0;
 		GetAttributeFloat(cluster, proc,
 						  ATTR_CUMULATIVE_SLOT_TIME,&slot_time);
 		slot_time += wall_clock_ckpt*slot_weight;
@@ -9216,11 +8931,11 @@ void FindRunnableJob(PROC_ID & jobid, ClassAd* my_match_ad,
 				// of the claim with lower RANK, but future versions
 				// very well may.)
 
-			float current_startd_rank;
+			double current_startd_rank;
 			if( my_match_ad &&
 				my_match_ad->LookupFloat(ATTR_CURRENT_RANK, current_startd_rank) )
 			{
-				float new_startd_rank = 0;
+				double new_startd_rank = 0;
 				if( EvalFloat(ATTR_RANK, my_match_ad, ad, new_startd_rank) )
 				{
 					if( new_startd_rank < current_startd_rank ) {

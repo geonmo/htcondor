@@ -666,46 +666,46 @@ void DaemonCore::Set_Default_Reaper( int reaper_id )
  ********************************************************/
 int	DaemonCore::Register_Command(int command, const char* com_descrip,
 				CommandHandler handler, const char* handler_descrip,
-				DCpermission perm, int dprintf_flag, bool force_authentication,
+				DCpermission perm, bool force_authentication,
 				int wait_for_payload, std::vector<DCpermission> *alternate_perm)
 {
 	return( Register_Command(command, com_descrip, handler,
 							(CommandHandlercpp)NULL, handler_descrip, nullptr,
-							 perm, dprintf_flag, FALSE, force_authentication,
+							 perm, FALSE, force_authentication,
 							 wait_for_payload, alternate_perm) );
 }
 
 int	DaemonCore::Register_Command(int command, const char *com_descrip,
 				CommandHandlercpp handlercpp, const char* handler_descrip,
-				Service* s, DCpermission perm, int dprintf_flag,
+				Service* s, DCpermission perm,
 				bool force_authentication, int wait_for_payload,
 				std::vector<DCpermission> *alternate_perm)
 {
 	return( Register_Command(command, com_descrip, NULL, handlercpp,
-							 handler_descrip, s, perm, dprintf_flag, TRUE,
+							 handler_descrip, s, perm, TRUE,
 							 force_authentication, wait_for_payload,
 							 alternate_perm) );
 }
 
 int	DaemonCore::Register_CommandWithPayload(int command, const char* com_descrip,
 				CommandHandler handler, const char* handler_descrip,
-				DCpermission perm, int dprintf_flag, bool force_authentication,
+				DCpermission perm, bool force_authentication,
 				int wait_for_payload, std::vector<DCpermission> *alternate_perm)
 {
 	return( Register_Command(command, com_descrip, handler,
 							(CommandHandlercpp)NULL, handler_descrip, nullptr,
-							 perm, dprintf_flag, FALSE, force_authentication,
+							 perm, FALSE, force_authentication,
 							 wait_for_payload, alternate_perm) );
 }
 
 int	DaemonCore::Register_CommandWithPayload(int command, const char *com_descrip,
 				CommandHandlercpp handlercpp, const char* handler_descrip,
-				Service* s, DCpermission perm, int dprintf_flag,
+				Service* s, DCpermission perm,
 				bool force_authentication, int wait_for_payload,
 				std::vector<DCpermission> *alternate_perm)
 {
 	return( Register_Command(command, com_descrip, NULL, handlercpp,
-							 handler_descrip, s, perm, dprintf_flag, TRUE,
+							 handler_descrip, s, perm, TRUE,
 							 force_authentication, wait_for_payload,
 							 alternate_perm) );
 }
@@ -827,38 +827,36 @@ bool DaemonCore::TooManyRegisteredSockets(int fd,std::string *msg,int num_fds)
 
 int	DaemonCore::Register_Socket(Stream* iosock, const char* iosock_descrip,
 				SocketHandler handler, const char* handler_descrip,
-				DCpermission perm, HandlerType handler_type,
-				void **prev_entry)
+				HandlerType handler_type, void **prev_entry)
 {
 	return( Register_Socket(iosock, iosock_descrip, handler,
 							(SocketHandlercpp)NULL, handler_descrip, nullptr,
-							perm, handler_type, FALSE, prev_entry) );
+							handler_type, FALSE, prev_entry) );
 }
 
 int	DaemonCore::Register_Socket(Stream* iosock, const char* iosock_descrip,
 				SocketHandlercpp handlercpp, const char* handler_descrip,
-				Service* s, DCpermission perm, HandlerType handler_type,
-				void **prev_entry)
+				Service* s, HandlerType handler_type, void **prev_entry)
 {
 	return( Register_Socket(iosock, iosock_descrip, NULL, handlercpp,
-							handler_descrip, s, perm, handler_type, TRUE, prev_entry) );
+							handler_descrip, s, handler_type, TRUE, prev_entry) );
 }
 
 int	DaemonCore::Register_Pipe(int pipe_end, const char* pipe_descrip,
 				PipeHandler handler, const char* handler_descrip,
-				HandlerType handler_type, DCpermission perm)
+				HandlerType handler_type)
 {
 	return( Register_Pipe(pipe_end, pipe_descrip, handler,
 							NULL, handler_descrip, nullptr,
-							handler_type, perm, FALSE) );
+							handler_type, FALSE) );
 }
 
 int	DaemonCore::Register_Pipe(int pipe_end, const char* pipe_descrip,
 				PipeHandlercpp handlercpp, const char* handler_descrip,
-				Service* s, HandlerType handler_type, DCpermission perm)
+				Service* s, HandlerType handler_type)
 {
 	return( Register_Pipe(pipe_end, pipe_descrip, NULL, handlercpp,
-							handler_descrip, s, handler_type, perm, TRUE) );
+							handler_descrip, s, handler_type, TRUE) );
 }
 
 int	DaemonCore::Register_Reaper(const char* reap_descrip, ReaperHandler handler,
@@ -1050,7 +1048,7 @@ int DaemonCore::Register_UnregisteredCommandHandler(
 int DaemonCore::Register_Command(int command, const char* command_descrip,
 				CommandHandler handler, CommandHandlercpp handlercpp,
 				const char *handler_descrip, Service* s, DCpermission perm,
-				int dprintf_flag, int is_cpp, bool force_authentication,
+				int is_cpp, bool force_authentication,
 				int wait_for_payload, std::vector<DCpermission> *alternate_perm)
 {
 	int i = -1;
@@ -1093,7 +1091,6 @@ int DaemonCore::Register_Command(int command, const char* command_descrip,
 	comTable[i].force_authentication = force_authentication;
 	comTable[i].service = s;
 	comTable[i].data_ptr = NULL;
-	comTable[i].dprintf_flag = dprintf_flag;
 	comTable[i].wait_for_payload = wait_for_payload;
 	if (alternate_perm) {
 		comTable[i].alternate_perm = new std::vector<DCpermission>(*alternate_perm);
@@ -1694,7 +1691,7 @@ int DaemonCore::Cancel_Signal( int sig )
 
 int DaemonCore::Register_Socket(Stream *iosock, const char* iosock_descrip,
 				SocketHandler handler, SocketHandlercpp handlercpp,
-				const char *handler_descrip, Service* s, DCpermission perm,
+				const char *handler_descrip, Service* s,
 				HandlerType handler_type,
 				int is_cpp, void **prev_entry)
 {
@@ -1837,7 +1834,6 @@ int DaemonCore::Register_Socket(Stream *iosock, const char* iosock_descrip,
 	(*sockTable)[i].handler = handler;
 	(*sockTable)[i].handlercpp = handlercpp;
 	(*sockTable)[i].is_cpp = (bool)is_cpp;
-	(*sockTable)[i].perm = perm;
 	(*sockTable)[i].handler_type = handler_type;
 	(*sockTable)[i].service = s;
 	(*sockTable)[i].data_ptr = NULL;
@@ -2194,8 +2190,7 @@ int DaemonCore::Inherit_Pipe(int fd, bool is_write, bool can_register, bool nonb
 int DaemonCore::Register_Pipe(int pipe_end, const char* pipe_descrip,
 				PipeHandler handler, PipeHandlercpp handlercpp,
 				const char *handler_descrip, Service* s,
-				HandlerType handler_type, DCpermission perm,
-				int is_cpp)
+				HandlerType handler_type, int is_cpp)
 {
     int     i;
     int     j;
@@ -2232,7 +2227,6 @@ int DaemonCore::Register_Pipe(int pipe_end, const char* pipe_descrip,
 	(*pipeTable)[i].handler_type = handler_type;
 	(*pipeTable)[i].handlercpp = handlercpp;
 	(*pipeTable)[i].is_cpp = (bool)is_cpp;
-	(*pipeTable)[i].perm = perm;
 	(*pipeTable)[i].service = s;
 	(*pipeTable)[i].data_ptr = NULL;
 	free((*pipeTable)[i].pipe_descrip);
@@ -5224,9 +5218,6 @@ int DaemonCore::Shutdown_Fast(pid_t pid, bool want_core )
 	if ( pid == ppid )
 		return FALSE;		// cannot shut down our parent
 
-    // Clear sessions associated with the child
-    clearSession(pid);
-
 #if defined(WIN32)
 	// even on a shutdown_fast, first try to send a WM_CLOSE because
 	// when we call TerminateProcess, any DLL's do not get a chance to
@@ -5295,9 +5286,6 @@ int DaemonCore::Shutdown_Graceful(pid_t pid)
 
 	if ( pid == ppid )
 		return FALSE;		// cannot shut down our parent
-
-    // Clear sessions associated with the child
-    clearSession(pid);
 
 #if defined(WIN32)
 
@@ -6289,10 +6277,10 @@ void CreateProcessForkit::exec() {
 
 			// add/override the inherit variable with the correct value
 			// for this process.
-		m_envobject.SetEnv( EnvGetName( ENV_INHERIT ), m_inheritbuf.c_str() );
+		m_envobject.SetEnv( ENV_CONDOR_INHERIT, m_inheritbuf.c_str() );
 
 		if( !m_privateinheritbuf.empty() ) {
-			m_envobject.SetEnv( EnvGetName( ENV_PRIVATE ), m_privateinheritbuf.c_str() );
+			m_envobject.SetEnv( ENV_CONDOR_PRIVATE, m_privateinheritbuf.c_str() );
 		}
 	}
 
@@ -7165,7 +7153,7 @@ int DaemonCore::Create_Process(
 				inheritbuf += " 2 ";
 				ptmp = it->ssock()->serialize();
 				inheritbuf += ptmp;
-				delete []ptmp;
+				free(ptmp);
 			}
 
 				// now put the actual fds into the list of fds to inherit
@@ -7460,10 +7448,10 @@ int DaemonCore::Create_Process(
 
 
 		if( HAS_DCJOBOPT_ENV_INHERIT(job_opt_mask) && HAS_DCJOBOPT_CONDOR_ENV_INHERIT(job_opt_mask) ) {
-			job_environ.SetEnv( EnvGetName( ENV_INHERIT ), inheritbuf.Value() );
+			job_environ.SetEnv( ENV_CONDOR_INHERIT, inheritbuf.Value() );
 
 			if( !privateinheritbuf.IsEmpty() ) {
-				job_environ.SetEnv( EnvGetName( ENV_PRIVATE ), privateinheritbuf.Value() );
+				job_environ.SetEnv( ENV_CONDOR_PRIVATE, privateinheritbuf.Value() );
 			}
 		}
 
@@ -8936,7 +8924,7 @@ DaemonCore::Inherit( void )
 	 		"1" for relisock, a "2" for safesock, and a "0" when done.
 		*	command sockets.  first the rsock, then the ssock, then a "0".
 	*/
-	const char *envName = EnvGetName( ENV_INHERIT );
+	const char *envName = ENV_CONDOR_INHERIT;
 	const char *tmp = GetEnv( envName );
 #ifdef REFACTOR_SOCK_INHERIT
 	if (tmp) {
@@ -9132,7 +9120,7 @@ DaemonCore::Inherit( void )
 	}	// end of if we read out CONDOR_INHERIT ok
 
 	std::string family_session_info;
-	const char *privEnvName = EnvGetName( ENV_PRIVATE );
+	const char *privEnvName = ENV_CONDOR_PRIVATE;
 	const char *privTmp = GetEnv( privEnvName );
 	if ( privTmp != NULL ) {
 		dprintf ( D_DAEMONCORE, "Processing %s from parent\n", privEnvName );
@@ -9412,8 +9400,7 @@ DaemonCore::InitDCCommandSocket( int command_port )
 			// we can detect if any of our kids are hung.
 		daemonCore->Register_CommandWithPayload( DC_CHILDALIVE,"DC_CHILDALIVE",
 			(CommandHandlercpp)&DaemonKeepAlive::HandleChildAliveCommand,
-			"HandleChildAliveCommand", &m_DaemonKeepAlive, DAEMON,
-			D_FULLDEBUG );
+			"HandleChildAliveCommand", &m_DaemonKeepAlive, DAEMON );
 	}
 }
 
@@ -9900,9 +9887,6 @@ int DaemonCore::HandleProcessExit(pid_t pid, int exit_status)
 		pidentry->std_pipes[0] = DC_STD_FD_NOPIPE;
 	}
 	
-    //Now the child is gone, clear all sessions asssociated with the child
-    clearSession(pid);
-
 	// If process is Unix, we are passed the exit status.
 	// If process is NT and is remote, we are passed the exit status.
 	// If process is NT and is local, we need to fetch the exit status here.
@@ -10757,25 +10741,6 @@ SecMan* DaemonCore :: getSecMan()
     return sec_man;
 }
 
-void DaemonCore :: clearSession(pid_t pid)
-{
-	// this will clear any incoming sessions associated with the PID, even
-	// if it isn't a daemoncore child (like the stupid old shadow) and
-	// therefor has no command sock.
-	if(sec_man) {
-		sec_man->invalidateByParentAndPid(sec_man->my_unique_id(), pid);
-	}
-
-	// we also need to clear any outgoing sessions associated w/ this pid.
-    PidEntry * pidentry = NULL;
-
-    if ( pidTable->lookup(pid,pidentry) != -1 ) {
-        if (sec_man && pidentry) {
-            sec_man->invalidateHost(pidentry->sinful_string.c_str());
-        }
-    }
-}
-
 void DaemonCore :: invalidateSessionCache()
 {
 	/* for now, never invalidate the session cache */
@@ -11414,35 +11379,14 @@ DaemonCore::SetupAdministratorSession(unsigned duration, std::string &capability
 		return false;
 	}
 
-		// What should the collector admin be able to do to this daemon?
-		// - 453: RESTART
-		// - 454: DAEMONS_OFF
-		// - 455: DAEMONS_ON
-		// - 456: MASTER_OFF
-		// - 461: DAEMONS_OFF_FAST
-		// - 462: MASTER_OFF_FAST
-		// - 467: DAEMON_OFF
-		// - 468: DAEMON_OFF_FAST
-		// - 469: DAEMON_ON
-		// - 483: DAEMON_OFF_PEACEFUL
-		// - 484: DAEMONS_OFF_PEACEFUL
-		// - 485: RESTART_PEACEFUL
-		// - 60013: DC_FETCH_LOG
-		// - 60018: DC_PURGE_LOG
-		// - 60006: DC_OFF_FAST
-		// - 60005: DC_OFF_GRACEFUL
-		// - 60042: DC_OFF_FORCE
-		// - 60015: DC_OFF_PEACEFUL
-		// - 60016: DC_SET_PEACEFUL_SHUTDOWN
-		// - 60041: DC_SET_FORCE_SHUTDOWN
-
-	const char *session_info = "[Encryption=\"YES\";Integrity=\"YES\";ValidCommands=\"453,454,455,456,461,462,467,468,469,483,484,485,60013,60018,60006,60005,60042,60015,60016,60041\"]";
+	std::string session_info;
+	formatstr(session_info, "[Encryption=\"YES\";Integrity=\"YES\";ValidCommands=\"%s\"]", GetCommandsInAuthLevel(ADMINISTRATOR, true).c_str());
 
 	auto retval = daemonCore->getSecMan()->CreateNonNegotiatedSecuritySession(
 		ADMINISTRATOR,
 		id.c_str(),
 		keybuf.get(),
-		session_info,
+		session_info.c_str(),
 		AUTH_METHOD_MATCH,
 		COLLECTOR_SIDE_MATCHSESSION_FQU,
 		nullptr,
@@ -11451,7 +11395,7 @@ DaemonCore::SetupAdministratorSession(unsigned duration, std::string &capability
 		true
 	);
 	if (retval) {
-		ClaimIdParser cidp(id.c_str(), session_info, keybuf.get());
+		ClaimIdParser cidp(id.c_str(), session_info.c_str(), keybuf.get());
 		capability = cidp.claimId();
 		m_remote_admin_last = capability;
 		m_remote_admin_last_time = time(NULL);

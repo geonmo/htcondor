@@ -287,8 +287,7 @@ Claim::publish( ClassAd* cad )
 		// put the image size value from the last call to updateUsage into the ad.
 		cad->Assign(ATTR_IMAGE_SIZE, c_image_size);
 		// also the CpusUsage value
-		cad->Assign("CPUsUsage", c_cpus_usage);
-		//PRAGMA_REMIND("put CpusUsage into the standard attributes header file.")
+		cad->Assign(ATTR_CPUS_USAGE, c_cpus_usage);
 	}
 
 	// If this claim is for vm universe, update some info about VM
@@ -634,7 +633,7 @@ Claim::match_timed_out()
 			// restore our reqexp, and update the CM. 
 		res_ip->removeClaim( c );
 		res_ip->r_reqexp->restore();
-		res_ip->update();
+		res_ip->update_needed(Resource::WhyFor::wf_removeClaim);
 	}		
 	return;
 }
@@ -1004,7 +1003,7 @@ Claim::sendAlive()
 	int reg_rc = daemonCore->
 			Register_Socket( sock, "<Alive Contact Socket>",
 			  (SocketHandlercpp)&Claim::sendAliveConnectHandler,
-			  to_schedd, this, ALLOW );
+			  to_schedd, this );
 
 	if(reg_rc < 0) {
 		dprintf( D_ALWAYS,
@@ -1087,7 +1086,7 @@ Claim::sendAliveConnectHandler(Stream *s)
 	int reg_rc = daemonCore->
 			Register_Socket( sock, "<Alive Contact Socket>",
 			  (SocketHandlercpp)&Claim::sendAliveResponseHandler,
-			  to_schedd, this, ALLOW );
+			  to_schedd, this );
 
 	if(reg_rc < 0) {
 		dprintf( D_ALWAYS,
@@ -2062,7 +2061,7 @@ Claim::changeState( ClaimState s )
 		// everytime a COD claim changes state, we want to update the
 		// collector. 
 	if( c_type == CLAIM_COD ) {
-		c_rip->update();
+		c_rip->update_needed(Resource::WhyFor::wf_cod);
 	}
 }
 
@@ -2352,7 +2351,7 @@ ClaimId::ClaimId( ClaimType claim_type, char const * /*slotname*/ /*UNUSED*/ )
 	}
 
 	if( claim_type == CLAIM_OPPORTUNISTIC
-		&& param_boolean("SEC_ENABLE_MATCH_PASSWORD_AUTHENTICATION",false) )
+		&& param_boolean("SEC_ENABLE_MATCH_PASSWORD_AUTHENTICATION", true) )
 	{
 		MyString session_id;
 		MyString session_key;

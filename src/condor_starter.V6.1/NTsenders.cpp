@@ -20,7 +20,6 @@
 
 #include "condor_common.h"
 #include "condor_debug.h"
-#include "condor_fix_assert.h"
 #include "condor_io.h"
 #include "condor_classad.h"
 #include "condor_sys.h"
@@ -31,15 +30,17 @@
 #include "zkm_base64.h"
 
 #include "NTsenders.h"
-
-#define ON_ERROR_RETURN(x) if (x <= 0) {dprintf(D_ALWAYS, "i/o error result is %d, errno is %d\n", x, errno);errno=ETIMEDOUT;return -1;}
+#include "jic_shadow.h"
 
 static int CurrentSysCall;
 extern ReliSock *syscall_sock;
 extern time_t syscall_last_rpc_time;
-extern Starter *Starter;
+extern JICShadow* syscall_jic_shadow;
 
-extern "C" {
+// If we have a communication error on the syscall socket, close it and go
+// into reconnect mode.
+#define ON_ERROR_RETURN(x) if (x <= 0) {dprintf(D_ALWAYS, "i/o error result is %d, errno is %d (%s)\n", x, errno, strerror(errno));syscall_jic_shadow->disconnect();errno=ETIMEDOUT;return -1;}
+
 int
 REMOTE_CONDOR_register_starter_info( ClassAd* ad )
 {
@@ -1027,40 +1028,6 @@ REMOTE_CONDOR_ulog( ClassAd *ad )
 	result = syscall_sock->code(CurrentSysCall);
 	ON_ERROR_RETURN( result );
 	result = putClassAd(syscall_sock, *ad);
-	ON_ERROR_RETURN( result );
-	result = syscall_sock->end_of_message();
-	ON_ERROR_RETURN( result );
-	syscall_last_rpc_time = time(nullptr);
-
-	//NOTE: we expect no response.
-
-	return 0;
-}
-
-int
-REMOTE_CONDOR_phase( char *phase )
-{
-	int result = 0;
-
-	dprintf ( D_SYSCALLS, "Doing CONDOR_phase\n" );
-
-	CurrentSysCall = CONDOR_phase;
-
-	if( ! phase ) {
-		EXCEPT( "CONDOR_phase called with NULL phase!" );
-		return -1;
-	}
-
-	if( ! syscall_sock->is_connected() ) {
-		dprintf(D_ALWAYS, "RPC error: disconnected from shadow\n");
-		errno = ETIMEDOUT;
-		return -1;
-	}
-
-	syscall_sock->encode();
-	result = syscall_sock->code(CurrentSysCall);
-	ON_ERROR_RETURN( result );
-	result = syscall_sock->code(phase);
 	ON_ERROR_RETURN( result );
 	result = syscall_sock->end_of_message();
 	ON_ERROR_RETURN( result );
@@ -2806,5 +2773,3 @@ REMOTE_CONDOR_event_notification( ClassAd * event ) {
 
 	return rval;
 }
-
-} // extern "C"

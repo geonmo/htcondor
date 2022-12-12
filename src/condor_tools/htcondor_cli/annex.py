@@ -34,7 +34,7 @@ class Create(Verb):
             "args": ("--nodes",),
             "help": "Number of HPC nodes to schedule. Defaults to %(default)s",
             "type": int,
-            "default": 2,
+            "default": 1,
         },
         "lifetime": {
             "args": ("--lifetime",),
@@ -59,12 +59,6 @@ class Create(Verb):
             "dest": "collector",
             "help": "Collector that the annex reports to. Defaults to %(default)s",
             "default": htcondor.param.get("ANNEX_COLLECTOR", "htcondor-cm-hpcannex.osgdev.chtc.io"),
-        },
-        "ssh_target": {
-            "args": ("--ssh_target",),
-            #"help": "SSH target to use to talk with the HPC scheduler. Defaults to %(default)s",
-            "help": argparse.SUPPRESS,  # hidden option
-            "default": f"{getpass.getuser()}@{htcondor.param.get('ANNEX_SSH_HOST', 'login.xsede.org')}",
         },
         "token_file": {
             "args": ("--token_file",),
@@ -96,6 +90,41 @@ class Create(Verb):
             "args": ("--mem_mb",),
             # TODO: Parse units instead of requiring this to be a number of MBs
             "help": "Memory (in MB) to request (shared queues only).  Unset by default.",
+            "type": int,
+            "default": None,
+        },
+        "login_name": {
+            "args": ("--login-name","--login",),
+            "help": "The (SSH) login name to use for this capacity request.  Uses SSH's default.",
+            "default": None,
+        },
+        "login_host": {
+            "args": ("--login-host","--host",),
+            "help": "The (SSH) login host to use for this capacity request.  The default is system-specific.",
+            "default": None,
+        },
+        "startd_noclaim_shutdown": {
+            "args": ("--idle-time", "--startd-noclaim-shutdown"),
+            "metavar": "SECONDS",
+            "dest": "startd_noclaim_shutdown",
+            "help": "The number of seconds to remain idle before shutting down.  Default and suggested minimum is 300 seconds.",
+            "default": 300,
+            "type": int,
+        },
+        "gpus": {
+            "args": ("--gpus",),
+            "help": "Number of GPUs to request (GPU queues only).  Unset by default.",
+            "type": str,
+            "default": None,
+        },
+        "gpu_type": {
+            "args": ("--gpu-type",),
+            "help": "Type of GPU to request (GPU queues only).  Unset by default.",
+            "default": None,
+        },
+        "test": {
+            "args": ("--test",),
+            "help": argparse.SUPPRESS,
             "type": int,
             "default": None,
         },

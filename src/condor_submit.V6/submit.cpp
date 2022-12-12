@@ -32,6 +32,7 @@
 #include "condor_adtypes.h"
 #include "condor_io.h"
 #include "condor_distribution.h"
+#include "condor_environ.h"
 #include "condor_ver_info.h"
 #if !defined(WIN32)
 #include <pwd.h>
@@ -60,10 +61,7 @@
 #include "directory.h"
 #include "filename_tools.h"
 #include "fs_util.h"
-#include "dc_transferd.h"
-#include "condor_ftp.h"
 #include "condor_crontab.h"
-#include <scheduler.h>
 #include "condor_holdcodes.h"
 #include "condor_url.h"
 #include "condor_version.h"
@@ -114,7 +112,6 @@ char	*My_fs_domain;
 int		ExtraLineNo;
 int		GotQueueCommand = 0;
 int		GotNonEmptyQueueCommand = 0;
-SandboxTransferMethod	STMethod = STM_USE_SCHEDD_ONLY;
 
 
 const char	*MyName;
@@ -129,6 +126,7 @@ bool	NoCmdFileNeeded = false; // set if there is no need for a commmand file (i.
 bool	GotCmdlineKeys = false; // key=value or -append specifed on the command line
 int		WarnOnUnusedMacros = 1;
 int		DisableFileChecks = 0;
+int     DashQueryCapabilities = 0; // get capabilites from schedd and print the
 int		DashDryRun = 0;
 int		DashMaxJobs = 0;	 // maximum number of jobs to create before generating an error
 int		DashMaxClusters = 0; // maximum number of clusters to create before generating an error.
@@ -209,8 +207,10 @@ FILE		*DumpFile = NULL;
 bool		DumpFileIsStdout = 0;
 
 void usage(FILE * out);
-// this is in submit_help.cpp
+// these are in submit_help.cpp
 void help_info(FILE* out, int num_topics, const char ** topics);
+void schedd_capabilities_help(FILE * out, const ClassAd &ad, const std::string &helpex, DCSchedd* schedd, int options);
+
 void init_params();
 void reschedule();
 int submit_jobs (
@@ -234,7 +234,6 @@ static int MySendJobAttributes(const JOB_ID_KEY & key, const classad::ClassAd & 
 int  DoUnitTests(int options);
 
 char *username = NULL;
-char *myproxy_password = NULL;
 
 int process_job_credentials();
 
@@ -783,12 +782,6 @@ main( int argc, const char *argv[] )
 				}
 			} else if (is_dash_arg_prefix (ptr[0], "single-cluster", 3)) {
 				DashMaxClusters = 1;
-			} else if (is_dash_arg_prefix( ptr[0], "password", 1)) {
-				if( !(--argc) || !(*(++ptr)) ) {
-					fprintf( stderr, "%s: -password requires another argument\n",
-							 MyName );
-				}
-				myproxy_password = strdup (*ptr);
 			} else if (is_dash_arg_prefix(ptr[0], "pool", 2)) {
 				if( !(--argc) || !(*(++ptr)) ) {
 					fprintf( stderr, "%s: -pool requires another argument\n",
@@ -803,14 +796,6 @@ main( int argc, const char *argv[] )
 					//   seeing ":<port>" at the end, which is valid for a
 					//   collector name.
 				PoolName = strdup( *ptr );
-			} else if (is_dash_arg_prefix(ptr[0], "stm", 1)) {
-				if( !(--argc) || !(*(++ptr)) ) {
-					fprintf( stderr, "%s: -stm requires another argument\n",
-							 MyName );
-					exit(1);
-				}
-				method = *ptr;
-				string_to_stm(method, STMethod);
 			} else if (is_dash_arg_prefix(ptr[0], "unused", 1)) {
 				WarnOnUnusedMacros = WarnOnUnusedMacros == 1 ? 0 : 1;
 				// TOGGLE? 
@@ -842,6 +827,12 @@ main( int argc, const char *argv[] )
 			} else if (is_dash_arg_prefix(ptr[0], "help")) {
 				help_info(stdout, --argc, ++ptr);
 				exit( 0 );
+			} else if (is_dash_arg_colon_prefix(ptr[0], "capabilities", &pcolon, 3)) {
+				DashQueryCapabilities = 1;
+				if (pcolon && pcolon[0]) {
+					int opt = atoi(++pcolon);
+					if (opt) DashQueryCapabilities = opt;
+				}
 			} else if (is_dash_arg_prefix(ptr[0], "interactive", 1)) {
 				// we don't currently support -interactive on Windows, but we parse for it anyway.
 				dash_interactive = 1;
@@ -887,24 +878,6 @@ main( int argc, const char *argv[] )
 		NoCmdFileNeeded = true;
 	}
 
-	// ensure I have a known transfer method
-	if (STMethod == STM_UNKNOWN) {
-		fprintf( stderr, 
-			"%s: Unknown sandbox transfer method: %s\n", MyName, method.c_str());
-		usage(stderr);
-		exit(1);
-	}
-
-	// we only want communication with the schedd to take place... because
-	// that's the only type of communication we are interested in
-	if ( DumpClassAdToFile && STMethod != STM_USE_SCHEDD_ONLY ) {
-		fprintf( stderr, 
-			"%s: Dumping ClassAds to a file is not compatible with sandbox "
-			"transfer method: %s\n", MyName, method.c_str());
-		usage(stderr);
-		exit(1);
-	}
-
 	if (!DisableFileChecks) {
 		DisableFileChecks = param_boolean_crufty("SUBMIT_SKIP_FILECHECKS", true) ? 1 : 0;
 	}
@@ -937,6 +910,26 @@ main( int argc, const char *argv[] )
 		}
 	}
 
+	if (DashQueryCapabilities) {
+		queue_connect();
+		if ( ! MyQ) {
+			fprintf(stderr, "Could not connect to schedd to query capabilities");
+			exit(1);
+		}
+
+		ClassAd ad;
+		std::string helpex;
+		MyQ->get_Capabilities(ad);
+		if (MyQ->has_extended_help(helpex) && ! IsUrl(helpex.c_str())) {
+			MyQ->get_ExtendedHelp(helpex);
+		}
+		schedd_capabilities_help(stdout, ad, helpex, MySchedd, DashQueryCapabilities);
+
+		// TODO: report errors?? can this even fail?
+		CondorError errstk;
+		MyQ->disconnect(false, errstk);
+		exit(0);
+	}
 
 	// make sure our shadow will have access to our credential
 	// (check is disabled for "-n" and "-r" submits)
@@ -1060,7 +1053,6 @@ main( int argc, const char *argv[] )
 	submit_hash.setDisableFileChecks(DisableFileChecks);
 	submit_hash.setFakeFileCreationChecks(DashDryRun);
 	submit_hash.setScheddVersion(MySchedd ? MySchedd->version() : CondorVersion());
-	if (myproxy_password) submit_hash.setMyProxyPassword(myproxy_password);
 	submit_hash.init_base_ad(get_submit_time(), username);
 
 	if ( !DumpClassAdToFile ) {
@@ -1179,77 +1171,14 @@ main( int argc, const char *argv[] )
 			bool result;
 			CondorError errstack;
 
-			switch(STMethod) {
-				case STM_USE_SCHEDD_ONLY:
-					// perhaps check for proper schedd version here?
-					result = MySchedd->spoolJobFiles( (int)JobAdsArray.size(),
-											  JobAdsArray.data(),
-											  &errstack );
-					if ( !result ) {
-						fprintf( stderr, "\n%s\n", errstack.getFullText(true).c_str() );
-						fprintf( stderr, "ERROR: Failed to spool job files.\n" );
-						exit(1);
-					}
-					break;
-
-				case STM_USE_TRANSFERD:
-					{ // start block
-
-					fprintf(stdout,
-							"Locating a Sandbox for %lu jobs.\n", (unsigned long)JobAdsArray.size());
-					std::string td_sinful;
-					std::string td_capability;
-					ClassAd respad;
-					int invalid;
-					std::string reason;
-
-					result = MySchedd->requestSandboxLocation( FTPD_UPLOAD, 
-												(int)JobAdsArray.size(),
-												JobAdsArray.data(), FTP_CFTP,
-												&respad, &errstack );
-					if ( !result ) {
-						fprintf( stderr, "\n%s\n", errstack.getFullText(true).c_str() );
-						fprintf( stderr, 
-							"ERROR: Failed to get a sandbox location.\n" );
-						exit(1);
-					}
-
-					respad.LookupInteger(ATTR_TREQ_INVALID_REQUEST, invalid);
-					if (invalid == TRUE) {
-						fprintf( stderr, 
-							"Schedd rejected sand box location request:\n");
-						respad.LookupString(ATTR_TREQ_INVALID_REASON, reason);
-						fprintf( stderr, "\t%s\n", reason.c_str());
-						return 0;
-					}
-
-					respad.LookupString(ATTR_TREQ_TD_SINFUL, td_sinful);
-					respad.LookupString(ATTR_TREQ_CAPABILITY, td_capability);
-
-					dprintf(D_ALWAYS, "Got td: %s, cap: %s\n", td_sinful.c_str(),
-						td_capability.c_str());
-
-					fprintf(stdout,"Spooling data files for %lu jobs.\n",
-						(unsigned long)JobAdsArray.size());
-
-					DCTransferD dctd(td_sinful.c_str());
-
-					result = dctd.upload_job_files( (int)JobAdsArray.size(),
-											  JobAdsArray.data(),
-											  &respad, &errstack );
-					if ( !result ) {
-						fprintf( stderr, "\n%s\n", errstack.getFullText(true).c_str() );
-						fprintf( stderr, "ERROR: Failed to spool job files.\n" );
-						exit(1);
-					}
-
-					} // end block
-
-					break;
-
-				default:
-					EXCEPT("PROGRAMMER ERROR: Unknown sandbox transfer method");
-					break;
+			// perhaps check for proper schedd version here?
+			result = MySchedd->spoolJobFiles( (int)JobAdsArray.size(),
+			                                  JobAdsArray.data(),
+			                                  &errstack );
+			if ( !result ) {
+				fprintf( stderr, "\n%s\n", errstack.getFullText(true).c_str() );
+				fprintf( stderr, "ERROR: Failed to spool job files.\n" );
+				exit(1);
 			}
 		}
 	}
@@ -2516,6 +2445,7 @@ usage(FILE* out)
 	fprintf( out, "\t-file <submit-file>\tRead Submit commands from <submit-file>\n");
 	fprintf( out, "\t-terse  \t\tDisplay terse output, jobid ranges only\n" );
 	fprintf( out, "\t-verbose\t\tDisplay verbose output, jobid and full job ClassAd\n" );
+	fprintf( out, "\t-capabilities\t\tDisplay configured capabilities of the schedd\n" );
 	fprintf( out, "\t-debug  \t\tDisplay debugging output\n" );
 	fprintf( out, "\t-append <line>\t\tadd line to submit file before processing\n"
 				  "\t              \t\t(overrides submit file; multiple -a lines ok)\n" );
@@ -2543,12 +2473,7 @@ usage(FILE* out)
 					 "\t              \t\t(implies -spool)\n" );
     fprintf( out, "\t-addr <ip:port>\t\tsubmit to schedd at given \"sinful string\"\n" );
 	fprintf( out, "\t-spool\t\t\tspool all files to the schedd\n" );
-	fprintf( out, "\t-password <password>\tspecify password to MyProxy server\n" );
 	fprintf( out, "\t-pool <host>\t\tUse host as the central manager to query\n" );
-	fprintf( out, "\t-stm <method>\t\tHow to move a sandbox into HTCondor\n" );
-	fprintf( out, "\t             \t\t<methods> is one of: stm_use_schedd_only\n" );
-	fprintf( out, "\t             \t\t                     stm_use_transferd\n" );
-
 	fprintf( out, "\t<attrib>=<value>\tSet <attrib>=<value> before reading the submit file.\n" );
 
 	fprintf( out, "\n    If <submit-file> is omitted or is -, and a -queue is not provided, submit commands\n"
@@ -2589,9 +2514,6 @@ DoCleanup(int,int,const char*)
 		free(username);
 		username = NULL;
 	}
-	if (myproxy_password) {
-		free (myproxy_password);
-	}
 
 	return 0;		// For historical reasons...
 }
@@ -2601,9 +2523,6 @@ DoCleanup(int,int,const char*)
 void
 init_params()
 {
-	char *tmp = NULL;
-	std::string method;
-
 	const char * err = init_submit_default_macros();
 	if (err) {
 		fprintf(stderr, "%s\n", err);
@@ -2615,14 +2534,6 @@ init_params()
 		// Will always return something, since config() will put in a
 		// value (full hostname) if it's not in the config file.
 
-
-	// The default is set as the global initializer for STMethod
-	tmp = param( "SANDBOX_TRANSFER_METHOD" );
-	if ( tmp != NULL ) {
-		method = tmp;
-		free( tmp );
-		string_to_stm( method, STMethod );
-	}
 
 	WarnOnUnusedMacros =
 		param_boolean_crufty("WARN_ON_UNUSED_SUBMIT_FILE_MACROS",
@@ -3152,7 +3063,7 @@ setupAuthentication()
 	if( Rendezvous ) {
 		dprintf( D_FULLDEBUG,"setting RENDEZVOUS_DIRECTORY=%s\n", Rendezvous );
 			//SetEnv because Authentication::authenticate() expects them there.
-		SetEnv( "RENDEZVOUS_DIRECTORY", Rendezvous );
+		SetEnv(ENV_RENDEZVOUS_DIRECTORY, Rendezvous);
 		free( Rendezvous );
 	}
 }

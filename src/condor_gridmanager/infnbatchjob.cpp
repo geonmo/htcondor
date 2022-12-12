@@ -1362,9 +1362,9 @@ ClassAd *INFNBatchJob::buildSubmitAd()
 	const char *attrs_to_copy[] = {
 		ATTR_JOB_ARGUMENTS1,
 		ATTR_JOB_ARGUMENTS2,
-		ATTR_JOB_ENVIRONMENT1,
-		ATTR_JOB_ENVIRONMENT1_DELIM,
-		ATTR_JOB_ENVIRONMENT2,
+		ATTR_JOB_ENV_V1,
+		ATTR_JOB_ENV_V1_DELIM,
+		ATTR_JOB_ENVIRONMENT,
 		ATTR_JOB_INPUT,
 		ATTR_JOB_OUTPUT,
 		ATTR_JOB_ERROR,
@@ -1414,15 +1414,14 @@ ClassAd *INFNBatchJob::buildSubmitAd()
 			// CERequirements is a nested ad. Build the goofy blahp
 			// expression from the names and values of the nested ad.
 			ExprTree *new_cereq = NULL;
-			for ( classad::ClassAd::iterator next_attr = cereq_ad->begin();
-				  next_attr != cereq_ad->end(); next_attr++ ) {
+			for (auto & next_attr : *cereq_ad) {
 				classad::Value val;
-				next_attr->second->Evaluate( val );
+				next_attr.second->Evaluate( val );
 				classad::Literal *new_literal = classad::Literal::MakeLiteral( val );
 				if ( new_literal == NULL ) {
 					continue;
 				}
-				classad::AttributeReference *new_ref = classad::AttributeReference::MakeAttributeReference( NULL, next_attr->first, false );
+				classad::AttributeReference *new_ref = classad::AttributeReference::MakeAttributeReference( NULL, next_attr.first, false );
 				classad::Operation *new_op = classad::Operation::MakeOperation( classad::Operation::EQUAL_OP, new_ref, new_literal );
 				if ( new_cereq == NULL ) {
 					new_cereq = new_op;
@@ -1534,16 +1533,16 @@ ClassAd *INFNBatchJob::buildSubmitAd()
 	}
 
 	const char *next_name;
-	for ( auto itr = jobAd->begin(); itr != jobAd->end(); itr++ ) {
-		next_name = itr->first.c_str();
+	for (auto & itr : *jobAd) {
+		next_name = itr.first.c_str();
 		if ( strncasecmp( next_name, "REMOTE_", 7 ) == 0 &&
 			 strlen( next_name ) > 7 ) {
 
 			char const *attr_name = &(next_name[7]);
 
-			if(strcasecmp(attr_name,ATTR_JOB_ENVIRONMENT1) == 0 ||
-			   strcasecmp(attr_name,ATTR_JOB_ENVIRONMENT1_DELIM) == 0 ||
-			   strcasecmp(attr_name,ATTR_JOB_ENVIRONMENT2) == 0)
+			if(strcasecmp(attr_name,ATTR_JOB_ENV_V1) == 0 ||
+			   strcasecmp(attr_name,ATTR_JOB_ENV_V1_DELIM) == 0 ||
+			   strcasecmp(attr_name,ATTR_JOB_ENVIRONMENT) == 0)
 			{
 				//Any remote environment settings indicate that we
 				//should clear whatever environment was already copied
@@ -1551,9 +1550,9 @@ ClassAd *INFNBatchJob::buildSubmitAd()
 				//settings can never trump the remote settings.
 				if(!cleared_environment) {
 					cleared_environment = true;
-					submit_ad->Delete(ATTR_JOB_ENVIRONMENT1);
-					submit_ad->Delete(ATTR_JOB_ENVIRONMENT1_DELIM);
-					submit_ad->Delete(ATTR_JOB_ENVIRONMENT2);
+					submit_ad->Delete(ATTR_JOB_ENV_V1);
+					submit_ad->Delete(ATTR_JOB_ENV_V1_DELIM);
+					submit_ad->Delete(ATTR_JOB_ENVIRONMENT);
 				}
 			}
 
@@ -1571,7 +1570,7 @@ ClassAd *INFNBatchJob::buildSubmitAd()
 				}
 			}
 
-			ExprTree * pTree = itr->second->Copy();
+			ExprTree * pTree = itr.second->Copy();
 			submit_ad->Insert( attr_name, pTree );
 		}
 	}
@@ -1716,14 +1715,14 @@ ClassAd *INFNBatchJob::buildTransferAd()
 		}
 	}
 
-	for ( auto itr = jobAd->begin(); itr != jobAd->end(); itr++ ) {
-		next_name = itr->first.c_str();
+	for (auto & itr : *jobAd) {
+		next_name = itr.first.c_str();
 		if ( strncasecmp( next_name, "REMOTE_", 7 ) == 0 &&
 			 strlen( next_name ) > 7 ) {
 
 			char const *attr_name = &(next_name[7]);
 
-			ExprTree * pTree = itr->second->Copy();
+			ExprTree * pTree = itr.second->Copy();
 			xfer_ad->Insert( attr_name, pTree );
 		}
 	}

@@ -42,8 +42,8 @@
 #include "perm.h"
 #include "filename_tools.h"
 #include "directory.h"
+#include "tmp_dir.h"
 #include "exit.h"
-#include "condor_auth_x509.h"
 #include "setenv.h"
 #include "condor_claimid_parser.h"
 #include "condor_version.h"
@@ -160,40 +160,6 @@ Starter::Init( JobInfoCommunicator* my_jic, const char* original_cwd,
 		formatstr( WorkingDir, "%s%cdir_%ld", Execute, DIR_DELIM_CHAR, 
 				 (long)daemonCore->getpid() );
 	}
-
-#ifdef LINUX
-	const char *thinpool = getenv("_CONDOR_THINPOOL");
-	const char *thinpool_vg = getenv("_CONDOR_THINPOOL_VG");
-	const char *thinpool_size = getenv("_CONDOR_THINPOOL_SIZE_KB");
-	if (thinpool && thinpool_vg && thinpool_size) {
-		try {
-			m_lvm_max_size_kb = std::stol(thinpool_size);
-		} catch (...) {
-			m_lvm_max_size_kb = -1;
-		}
-		if (m_lvm_max_size_kb > 0) {
-			CondorError err;
-                        std::string thinpool_str(thinpool), slot_name(getMySlotName());
-                        bool do_encrypt = thinpool_str.substr(thinpool_str.size() - 4, 4) == "-enc";
-                        if (do_encrypt) {
-                            slot_name += "-enc";
-                            thinpool_str = thinpool_str.substr(0, thinpool_str.size() - 4);
-                        }
-			m_volume_mgr.reset(new VolumeManager::Handle(Execute, slot_name, thinpool_str, thinpool_vg, m_lvm_max_size_kb, err));
-			if (!err.empty()) {
-				dprintf(D_ALWAYS, "Failure when setting up filesystem for job: %s\n", err.getFullText().c_str());
-				m_volume_mgr.reset();
-			}
-			m_lvm_thin_volume = slot_name;
-			m_lvm_thin_pool = thinpool_str;
-			m_lvm_volume_group = thinpool_vg;
-			m_lvm_poll_tid = daemonCore->Register_Timer(10, 10,
-				(TimerHandlercpp)&Starter::CheckDiskUsage,
-				"check disk usage", this);
-		}
-	}
-#endif // LINUX
-
 
 		//
 		// We have switched all of these to call the "Remote"
@@ -1397,10 +1363,17 @@ Starter::startSSHD( int /*cmd*/, Stream* s )
 		setup_env.SetEnv("_CONDOR_SLOT_NAME",slot_name.c_str());
 	}
 
-    int setup_opt_mask = DCJOBOPT_NO_CONDOR_ENV_INHERIT;
-    if (!param_boolean("JOB_INHERITS_STARTER_ENVIRONMENT",false)) {
-        setup_opt_mask |= DCJOBOPT_NO_ENV_INHERIT;
-    }
+	int setup_opt_mask = DCJOBOPT_NO_CONDOR_ENV_INHERIT;
+	bool inherit_starter_env = false;
+	auto_free_ptr envlist(param("JOB_INHERITS_STARTER_ENVIRONMENT"));
+	if (envlist && ! string_is_boolean_param(envlist, inherit_starter_env)) {
+		WhiteBlackEnvFilter filter(envlist);
+		setup_env.Import(filter);
+		inherit_starter_env = false; // make sure that CreateProcess doesn't inherit again
+	}
+	if ( ! inherit_starter_env) {
+		setup_opt_mask |= DCJOBOPT_NO_ENV_INHERIT;
+	}
 
 	if( !preferred_shells.empty() ) {
 		dprintf(D_FULLDEBUG,
@@ -1619,7 +1592,7 @@ Starter::startSSHD( int /*cmd*/, Stream* s )
 			dprintf(D_ALWAYS, "Not setting LD_PRELOAD=%s for sshd, as file does not exist\n", getpwnampath.c_str());
 		}
 	}
-	if( !setup_env.InsertEnvIntoClassAd(sshd_ad, error_msg,NULL,&ver_info) ) {
+	if( !setup_env.InsertEnvIntoClassAd(*sshd_ad, error_msg) ) {
 		return SSHDFailed(s,
 			"Failed to insert environment into sshd job description: %s",
 			error_msg.c_str());
@@ -1989,6 +1962,40 @@ Starter::createTempExecuteDir( void )
 	WriteAdFiles();
 
 #endif /* WIN32 */
+
+#ifdef LINUX
+	const char *thinpool = getenv("_CONDOR_THINPOOL");
+	const char *thinpool_vg = getenv("_CONDOR_THINPOOL_VG");
+	const char *thinpool_size = getenv("_CONDOR_THINPOOL_SIZE_KB");
+	if (thinpool && thinpool_vg && thinpool_size) {
+		try {
+			m_lvm_max_size_kb = std::stol(thinpool_size);
+		} catch (...) {
+			m_lvm_max_size_kb = -1;
+		}
+		if (m_lvm_max_size_kb > 0) {
+			CondorError err;
+                        std::string thinpool_str(thinpool), slot_name(getMySlotName());
+                        bool do_encrypt = thinpool_str.substr(thinpool_str.size() - 4, 4) == "-enc";
+                        if (do_encrypt) {
+                            slot_name += "-enc";
+                            thinpool_str = thinpool_str.substr(0, thinpool_str.size() - 4);
+                        }
+			m_volume_mgr.reset(new VolumeManager::Handle(WorkingDir, slot_name, thinpool_str, thinpool_vg, m_lvm_max_size_kb, err));
+			if (!err.empty()) {
+				dprintf(D_ALWAYS, "Failure when setting up filesystem for job: %s\n", err.getFullText().c_str());
+				m_volume_mgr.reset();
+			}
+			m_lvm_thin_volume = slot_name;
+			m_lvm_thin_pool = thinpool_str;
+			m_lvm_volume_group = thinpool_vg;
+			m_lvm_poll_tid = daemonCore->Register_Timer(10, 10,
+				(TimerHandlercpp)&Starter::CheckDiskUsage,
+				"check disk usage", this);
+		}
+	}
+#endif // LINUX
+
 
 	// switch to user priv -- it's the owner of the directory we just made
 	priv_state ch_p = set_user_priv();
@@ -2369,6 +2376,8 @@ Starter::SpawnJob( void )
 		// kind of job we're starting up, instantiate the appropriate
 		// userproc class, and actually start the job.
 	ClassAd* jobAd = jic->jobClassAd();
+	ClassAd * mad = jic->machClassAd();
+
 	if ( ! jobAd->LookupInteger( ATTR_JOB_UNIVERSE, jobUniverse ) || jobUniverse < 1 ) {
 		dprintf( D_ALWAYS, 
 				 "Job doesn't specify universe, assuming VANILLA\n" ); 
@@ -2399,8 +2408,12 @@ Starter::SpawnJob( void )
 			std::string docker_image;
 			jobAd->LookupString(ATTR_DOCKER_IMAGE, docker_image);
 
-			// If they give us a docker repo, use docker universe
-			if (wantContainer && wantDockerRepo) {
+			bool hasDocker = false;
+			mad->LookupBool(ATTR_HAS_DOCKER, hasDocker);
+
+			// If they give us a docker repo and we have a working
+			// docker runtime, use docker universe
+			if (wantContainer && wantDockerRepo && hasDocker) {
 				wantDocker = true;
 			}
 
@@ -3070,6 +3083,73 @@ Starter::publishPostScriptUpdateAd( ClassAd* ad )
 	return false;
 }
 
+FILE *
+Starter::OpenManifestFile( const char * filename )
+{
+	// We should be passed in a filename that is a relavtive path
+	ASSERT(filename != NULL);
+	ASSERT(!IS_ANY_DIR_DELIM_CHAR(filename[0]));
+
+	// Makes no sense if we don't have a job info communicator or job ad
+	const ClassAd *job_ad = NULL;
+	if (jic) {
+		job_ad = jic->getJobAd();
+	}
+	if (!job_ad) {
+		dprintf( D_ERROR, "OpenManifestFile(%s): invoked without a job classad\n",
+			filename);
+		return NULL;
+	}
+
+	// Confirm we really are in user priv before continuing; perhaps
+	// we are still in condor priv if, for insatnce, thus method is invoked
+	// before initializing the user ids.
+	TemporaryPrivSentry sentry(PRIV_USER);
+	if ( get_priv_state() != PRIV_USER ) {
+		dprintf( D_ERROR, "OpenManifestFile(%s): failed to switch to PRIV_USER\n",
+			filename);
+		return NULL;
+
+	}
+
+	// The rest of this method assumes we are in the job sandbox,
+	// so set cwd to the sandbox (but reset the cwd when we return)
+	std::string errMsg;
+	TmpDir tmpDir;
+	if (!tmpDir.Cd2TmpDir(GetWorkingDir(0),errMsg)) {
+		dprintf( D_ERROR, "OpenManifestFile(%s): failed to cd to job sandbox %s\n",
+			filename, GetWorkingDir(0));
+		return NULL;
+
+	}
+
+	std::string dirname = "_condor_manifest";
+	int cluster, proc;
+	if( job_ad->LookupInteger( ATTR_CLUSTER_ID, cluster ) && job_ad->LookupInteger( ATTR_PROC_ID, proc ) ) {
+		formatstr( dirname, "%d_%d_manifest", cluster, proc );
+	}
+	job_ad->LookupString( ATTR_JOB_MANIFEST_DIR, dirname );
+	int r = mkdir( dirname.c_str(), 0700 );
+	if (r < 0 && errno != 17) {
+		dprintf( D_ERROR, "OpenManifestFile(%s): failed to make directory %s: (%d) %s\n",
+			filename, dirname.c_str(), errno, strerror(errno));
+		return NULL;
+	}
+	jic->addToOutputFiles( dirname.c_str() );
+	std::string f = dirname + DIR_DELIM_CHAR + filename;
+
+	FILE * file = fopen( f.c_str(), "w" );
+	if( file == NULL ) {
+		dprintf( D_ERROR, "OpenManifestFile(%s): failed to open log '%s': %d (%s)\n",
+			filename, f.c_str(), errno, strerror(errno) );
+		return NULL;
+	}
+
+	dprintf(D_STATUS, "Writing into manifest file '%s'\n", f.c_str() );
+
+	return file;
+}
+
 bool
 Starter::GetJobEnv( ClassAd *jobad, Env *job_env, std::string & env_errors )
 {
@@ -3166,10 +3246,7 @@ Starter::PublishToEnv( Env* proc_env )
 
 		// now, stuff the starter knows about, instead of individual
 		// procs under its control
-	std::string base;
-	base = "_";
-	base += myDistro->GetUc();
-	base += '_';
+	const char * base = "_CONDOR_";
  
 	std::string env_name;
 

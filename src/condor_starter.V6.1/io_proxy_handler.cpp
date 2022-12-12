@@ -463,12 +463,6 @@ void IOProxyHandler::handle_standard_request( ReliSock *r, char *line )
 		}
 		r->put_line_raw(line);
 		
-	} else if(m_enable_updates && sscanf_chirp(line,"phase %s", name)==1) {
-
-		result = REMOTE_CONDOR_phase( name );
-		sprintf(line, "%d", convert(result,errno));
-		r->put_line_raw(line);
-
 	} else if(m_enable_updates && sscanf_chirp(line,"ulog %s", name)==1) {
 
 		GenericEvent event;
@@ -483,6 +477,7 @@ void IOProxyHandler::handle_standard_request( ReliSock *r, char *line )
 		result = REMOTE_CONDOR_ulog( ad );
 		sprintf(line, "%d", convert(result,errno));
 		r->put_line_raw(line);
+		delete ad;
 
 	} else if(m_enable_files && sscanf_chirp(line, "pread %d %d %d", &fd, &length, &offset) == 3){ 
 		
@@ -664,6 +659,7 @@ void IOProxyHandler::handle_standard_request( ReliSock *r, char *line )
 		if(result>0) {
 			r->put_bytes_raw(buffer,strlen(buffer));
 		}
+		if (buffer) free(buffer);
 
 	} else if(m_enable_files && sscanf_chirp(line,"whoami %d", &length) == 1) {
 

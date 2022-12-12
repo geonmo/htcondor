@@ -63,8 +63,6 @@
 #include "directory.h"
 #include "filename_tools.h"
 #include "fs_util.h"
-#include "dc_transferd.h"
-#include "condor_ftp.h"
 #include "condor_crontab.h"
 #include "condor_holdcodes.h"
 #include "condor_url.h"
@@ -173,6 +171,15 @@ bool ActualScheddQ::has_extended_submit_commands(ClassAd &cmds) {
 	}
 	return false;
 }
+bool ActualScheddQ::has_extended_help(std::string & filename) {
+	filename.clear();
+	int rval = init_capabilities();
+	if (rval == 0) {
+		return capabilities.LookupString("ExtendedSubmitHelpFile", filename) && ! filename.empty();
+	}
+	return false;
+}
+
 int ActualScheddQ::get_Capabilities(ClassAd & caps) {
 	int rval = init_capabilities();
 	if (rval == 0) {
@@ -180,6 +187,17 @@ int ActualScheddQ::get_Capabilities(ClassAd & caps) {
 	}
 	return rval;
 }
+int ActualScheddQ::get_ExtendedHelp(std::string &content) {
+	content.clear();
+	if (has_extended_help(content)) {
+		content.clear();
+		ClassAd ad;
+		GetScheddCapabilites(GetsScheddCapabilities_F_HELPTEXT, ad);
+		ad.LookupString("ExtendedSubmitHelp", content);
+	}
+	return content.size();
+}
+
 
 int ActualScheddQ::set_Attribute(int cluster, int proc, const char *attr, const char *value, SetAttributeFlags_t flags) {
 	return SetAttribute(cluster, proc, attr, value, flags);

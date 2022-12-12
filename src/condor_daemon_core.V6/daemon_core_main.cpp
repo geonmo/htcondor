@@ -135,10 +135,6 @@ bool	DynamicDirs = false;
 // so that it can decide if it should run at a particular machine or not. 
 int runfor = 0; //allow cmd line option to exit after *runfor* minutes
 
-// This flag tells daemoncore whether to do the authorization initialization.
-// It can be set to false by calling the DC_Skip_Auth_Init() function.
-static bool doAuthInit = true;
-
 // This flag tells daemoncore whether to do the core limit initialization.
 // It can be set to false by calling the DC_Skip_Core_Init() function.
 static bool doCoreInit = true;
@@ -864,7 +860,7 @@ DC_Exit( int status, const char *shutdown_program )
 	if ( shutdown_program ) {
 #     if !defined(WIN32)
 		dprintf( D_ALWAYS, "**** %s (%s_%s) pid %lu EXITING BY EXECING %s\n",
-				 myName, myDistro->Get(), get_mySubSystem()->getName(), pid,
+				 myName, MY_condor_NAME, get_mySubSystem()->getName(), pid,
 				 shutdown_program );
 		priv_state p = set_root_priv( );
 		int exec_status = execl( shutdown_program, shutdown_program, NULL );
@@ -874,7 +870,7 @@ DC_Exit( int status, const char *shutdown_program )
 #     else
 		dprintf( D_ALWAYS,
 				 "**** %s (%s_%s) pid %lu EXECING SHUTDOWN PROGRAM %s\n",
-				 myName, myDistro->Get(), get_mySubSystem()->getName(), pid,
+				 myName, MY_condor_NAME, get_mySubSystem()->getName(), pid,
 				 shutdown_program );
 		priv_state p = set_root_priv( );
 		int exec_status = execl( shutdown_program, shutdown_program, NULL );
@@ -886,7 +882,7 @@ DC_Exit( int status, const char *shutdown_program )
 #     endif
 	}
 	dprintf( D_ALWAYS, "**** %s (%s_%s) pid %lu EXITING WITH STATUS %d\n",
-			 myName, myDistro->Get(), get_mySubSystem()->getName(), pid,
+			 myName, MY_condor_NAME, get_mySubSystem()->getName(), pid,
 			 exit_status );
 
 	// Disable log rotation during process teardown (i.e. calling
@@ -897,12 +893,6 @@ DC_Exit( int status, const char *shutdown_program )
 	exit( exit_status );
 }
 
-
-void
-DC_Skip_Auth_Init()
-{
-	doAuthInit = false;
-}
 
 void
 DC_Skip_Core_Init()
@@ -1203,9 +1193,7 @@ set_dynamic_dir( const char* param_name, const char* append_str )
 
 	// Finally, insert the _condor_<param_name> environment
 	// variable, so our children get the right configuration.
-	MyString env_str( "_" );
-	env_str += myDistro->Get();
-	env_str += "_";
+	MyString env_str( "_condor_" );
 	env_str += param_name;
 	env_str += "=";
 	env_str += newdir;
@@ -1252,9 +1240,9 @@ handle_dynamic_dirs()
 		// variable, so that the startd will have a unique name. 
 	std::string cur_startd_name;
 	if(param(cur_startd_name, "STARTD_NAME")) {
-		sprintf( buf, "_%s_STARTD_NAME=%d@%s", myDistro->Get(), mypid, cur_startd_name.c_str());
+		sprintf( buf, "_condor_STARTD_NAME=%d@%s", mypid, cur_startd_name.c_str());
 	} else {
-		sprintf( buf, "_%s_STARTD_NAME=%d", myDistro->Get(), mypid );
+		sprintf( buf, "_condor_STARTD_NAME=%d", mypid );
 	}
 
 		// insert modified startd name
@@ -1756,7 +1744,8 @@ handle_fetch_log_history(ReliSock *stream, char *name) {
 	int numHistoryFiles = 0;
 	const char **historyFiles = 0;
 
-	historyFiles = findHistoryFiles(history_file_param, &numHistoryFiles);
+	auto_free_ptr history_file(param(history_file_param));
+	historyFiles = findHistoryFiles(history_file.ptr(), &numHistoryFiles);
 
 	if (!historyFiles) {
 		dprintf( D_ALWAYS, "DaemonCore: handle_fetch_log_history: no parameter named %s\n", history_file_param);
@@ -3449,10 +3438,6 @@ int dc_main( int argc, char** argv )
 		}
 	}
 
-	if ( EnvInit() < 0 ) {
-		exit( 1 );
-	}
-
 		// call out to the handler for pre daemonCore initialization
 		// stuff so that our client side can do stuff before we start
 		// messing with argv[]
@@ -3533,10 +3518,9 @@ int dc_main( int argc, char** argv )
 				ptmp = *ptr;
 				dcargs += 2;
 
-				ptmp1 = 
-					(char *)malloc( strlen(ptmp) + myDistro->GetLen() + 10 );
+				ptmp1 = (char *)malloc( strlen(ptmp) + 16 );
 				if ( ptmp1 ) {
-					sprintf(ptmp1,"%s_CONFIG=%s", myDistro->GetUc(), ptmp);
+					sprintf(ptmp1,"CONDOR_CONFIG=%s", ptmp);
 					SetEnv(ptmp1);
 					free(ptmp1);
 				}
@@ -3727,12 +3711,6 @@ int dc_main( int argc, char** argv )
 	if (wantsQuiet) { config_options |= CONFIG_OPT_WANT_QUIET; }
 	config_ex(config_options);
 
-
-    // call dc_config_GSI to set GSI related parameters so that all
-    // the daemons will know what to do.
-	if ( doAuthInit ) {
-		condor_auth_config( true );
-	}
 
 		// See if we're supposed to be allowing core files or not
 	if ( doCoreInit ) {
@@ -3942,7 +3920,7 @@ int dc_main( int argc, char** argv )
 		// configured now, so the dprintf()s will work.
 	dprintf(D_ALWAYS,"******************************************************\n");
 	dprintf(D_ALWAYS,"** %s (%s_%s) STARTING UP\n",
-			myName,myDistro->GetUc(), get_mySubSystem()->getName() );
+			myName, MY_CONDOR_NAME_UC, get_mySubSystem()->getName() );
 	if( myFullName ) {
 		dprintf( D_ALWAYS, "** %s\n", myFullName );
 		free( myFullName );
@@ -3985,7 +3963,7 @@ int dc_main( int argc, char** argv )
 		dprintf(D_ALWAYS, "Using config source: %s\n", 
 				global_config_source.c_str());
 	} else {
-		const char* env_name = EnvGetName( ENV_CONFIG );
+		const char* env_name = ENV_CONDOR_CONFIG;
 		char* env = getenv( env_name );
 		if( env ) {
 			dprintf(D_ALWAYS, 
@@ -4199,12 +4177,12 @@ int dc_main( int argc, char** argv )
 	daemonCore->Register_Command( DC_CONFIG_PERSIST, "DC_CONFIG_PERSIST",
 								  handle_config,
 								  "handle_config()", DAEMON,
-								  D_COMMAND, false, 0, &allow_perms);
+								  false, 0, &allow_perms);
 
 	daemonCore->Register_Command( DC_CONFIG_RUNTIME, "DC_CONFIG_RUNTIME",
 								  handle_config,
 								  "handle_config()", DAEMON,
-								  D_COMMAND, false, 0, &allow_perms);
+								  false, 0, &allow_perms);
 
 	daemonCore->Register_Command( DC_OFF_FAST, "DC_OFF_FAST",
 								  handle_off_fast,
@@ -4322,7 +4300,7 @@ int dc_main( int argc, char** argv )
 	daemonCore->Register_CommandWithPayload( DC_GET_SESSION_TOKEN, "DC_GET_SESSION_TOKEN",
 								handle_dc_session_token,
 								"handle_dc_session_token()", DAEMON,
-								  D_COMMAND, false, 0, &allow_perms );
+								  false, 0, &allow_perms );
 
 		//
 		// Start a token request workflow.
@@ -4330,7 +4308,7 @@ int dc_main( int argc, char** argv )
 	daemonCore->Register_CommandWithPayload( DC_START_TOKEN_REQUEST, "DC_START_TOKEN_REQUEST",
 								handle_dc_start_token_request,
 								"handle_dc_start_token_request()", DAEMON,
-								  D_COMMAND, false, 0, &allow_perms );
+								  false, 0, &allow_perms );
 
 		//
 		// Poll for token request completion.
@@ -4338,7 +4316,7 @@ int dc_main( int argc, char** argv )
 	daemonCore->Register_CommandWithPayload( DC_FINISH_TOKEN_REQUEST, "DC_FINISH_TOKEN_REQUEST",
 								handle_dc_finish_token_request,
 								"handle_dc_finish_token_request()", DAEMON,
-								  D_COMMAND, false, 0, &allow_perms );
+								  false, 0, &allow_perms );
 
 		//
 		// List the outstanding token requests.
@@ -4348,7 +4326,7 @@ int dc_main( int argc, char** argv )
 		//
 	daemonCore->Register_CommandWithPayload( DC_LIST_TOKEN_REQUEST, "DC_LIST_TOKEN_REQUEST",
 		handle_dc_list_token_request,
-		"handle_dc_list_token_request", DAEMON, D_COMMAND, true, 0, &allow_perms );
+		"handle_dc_list_token_request", DAEMON, true, 0, &allow_perms );
 
 		//
 		// Approve a token request.
@@ -4359,7 +4337,7 @@ int dc_main( int argc, char** argv )
 		//
 	daemonCore->Register_CommandWithPayload( DC_APPROVE_TOKEN_REQUEST, "DC_APPROVE_TOKEN_REQUEST",
 		handle_dc_approve_token_request,
-		"handle_dc_approve_token_request", DAEMON, D_COMMAND, true, 0, &allow_perms );
+		"handle_dc_approve_token_request", DAEMON, true, 0, &allow_perms );
 
 		//
 		// Install an auto-approval rule
@@ -4373,7 +4351,7 @@ int dc_main( int argc, char** argv )
 		//
 	daemonCore->Register_CommandWithPayload( DC_EXCHANGE_SCITOKEN, "DC_EXCHANGE_SCITOKEN",
 		handle_dc_exchange_scitoken,
-		"handle_dc_exchange_scitoken", WRITE, D_COMMAND, true, 0, &allow_perms );
+		"handle_dc_exchange_scitoken", WRITE, true, 0, &allow_perms );
 
 	// Call daemonCore's reconfig(), which reads everything from
 	// the config file that daemonCore cares about and initializes
@@ -4382,7 +4360,7 @@ int dc_main( int argc, char** argv )
 
 	// zmiller
 	// look in the env for ENV_PARENT_ID
-	const char* envName = EnvGetName ( ENV_PARENT_ID );
+	const char* envName = ENV_CONDOR_PARENT_ID;
 	MyString parent_id;
 
 	GetEnv( envName, parent_id );

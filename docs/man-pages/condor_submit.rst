@@ -16,7 +16,7 @@ Synopsis
 [**-dump** *filename*] [**-interactive** ] [**-factory** ]
 [**-allow-crlf-script** ] [**-dry-run** ]
 [**-maxjobs** *number-of-jobs*] [**-single-cluster** ]
-[**-stm** *method*] [**<submit-variable>=<value>** ] [*submit
+[**<submit-variable>=<value>** ] [*submit
 description file* ] [**-queue** *queue_arguments*]
 
 Description
@@ -32,15 +32,7 @@ may cause one or more clusters. A cluster is a set of jobs specified in
 the submit description between
 **queue** :index:`queue<single: queue; submit commands>` commands for which the
 executable is not changed. It is advantageous to submit multiple jobs as
-a single cluster because:
-
--  Much less memory is used by the scheduler to hold the same number of
-   jobs.
--  Only one copy of the checkpoint file is needed to represent all jobs
-   in a cluster until they begin execution.
--  There is much less overhead involved for HTCondor to start the next
-   job in a cluster than for HTCondor to start a new cluster. This can
-   make a big difference when submitting lots of short jobs.
+a single cluster because the schedd uses much less memory to hold the jobs.
 
 Multiple clusters may be specified within a single submit description.
 Each cluster must specify a single executable.
@@ -53,7 +45,7 @@ submit description file. If this optional argument is the dash character
 specified for the *submit description file*, **-verbose** is implied;
 this can be overridden by specifying **-terse**.
 
-If no *submit discription file* argument is given, and no *-queue*
+If no *submit description file* argument is given, and no *-queue*
 argument is given, commands are taken automatically from standard input.
 
 Note that submission of jobs from a Windows machine requires a stashed
@@ -84,9 +76,9 @@ Options
     spelling errors of submit description file commands. The warnings
     are sent to stderr.
  **-file** *submit_file*
-    Use *submit_file* as the submit discription file. This is
+    Use *submit_file* as the submit description file. This is
     equivalent to providing *submit_file* as an argument without the
-    preceeding *-file*.
+    preceding *-file*.
  **-name** *schedd_name*
     Submit to the specified *condor_schedd*. Use this option to submit
     to a *condor_schedd* other than the default local one.
@@ -114,8 +106,6 @@ Options
     files defined with
     **output** :index:`output<single: output; submit commands>` or
     **transfer_output_files** :index:`transfer_output_files<single: transfer_output_files; submit commands>`.
- **-password** *passphrase*
-    Specify a password to the *MyProxy* server.
  **-debug**
     Cause debugging information to be sent to ``stderr``, based on the
     value of the configuration variable ``TOOL_DEBUG``.
@@ -176,7 +166,7 @@ Options
     Sends all of the jobs as a late materialization job factory.  A job factory
     consists of a single cluster classad and a digest containing the submit
     commands necessary to describe the differences between jobs.  If the ``Queue``
-    statment has itemdata, then the itemdata will be sent.  Using this option
+    statement has itemdata, then the itemdata will be sent.  Using this option
     is equivalent to using the **max_materialize**
     :index:`max_materialize<single: max_materialize; submit commands>` submit command.
  **-allow-crlf-script**
@@ -203,9 +193,6 @@ Options
     If the jobs specified by the submit description file causes more
     than a single cluster value to be assigned, then no jobs are
     submitted for execution and an error message is generated.
- **-stm** *method*
-    Specify the method use to move a sandbox into HTCondor. *method* is
-    one of **stm_use_schedd_only** or **stm_use_transferd**.
  **<submit-variable>=<value>**
     Defines a submit command or submit variable with a value, and parses
     it as if it was placed at the beginning of the submit description
@@ -262,6 +249,7 @@ numerous. They are listed here in alphabetical order by category.
 BASIC COMMANDS
 
     :index:`arguments<single: arguments; submit commands>`
+
  arguments = <argument_list>
     List of arguments to be supplied to the executable as part of the
     command line.
@@ -370,9 +358,10 @@ BASIC COMMANDS
     This is for the convenience of Windows users.
 
     :index:`environment<single: environment; submit commands>`
+    :index:`setting, for a job<single: setting, for a job; environment variables>`\ 
+
  environment = <parameter_list>
-    List of environment
-    :index:`setting, for a job<single: setting, for a job; environment variables>`\ variables.
+    List of environment variables.
 
     There are two different formats for specifying the environment
     variables: the old format and the new format. The old format is
@@ -463,7 +452,11 @@ BASIC COMMANDS
     (by the job) in the remote scratch directory of the machine where
     the job is executed. When the job exits, the resulting file is
     transferred back to the machine where the job was submitted, and the
-    path is utilized for file placement. If not specified, the default
+    path is utilized for file placement.
+    If you specify a relative path, the final path will be relative to the
+    job's initial working directory, and HTCondor will create directories
+    as necessary to transfer the file.
+    If not specified, the default
     value of ``/dev/null`` is used for submission to a Unix machine. If
     not specified, error messages are ignored for submission to a
     Windows machine. More than one job should not use the same error
@@ -485,6 +478,16 @@ BASIC COMMANDS
     as the *condor_submit* command is issued.
 
     :index:`getenv<single: getenv; submit commands>`
+
+    :index:`batch_name<single: batch_name; submit commands>`
+ batch_name = <batch_name>
+    Set the batch name for this submit. The batch name is displayed by
+    *condor_q* **-batch**. It is intended for use by users to give
+    meaningful names to their jobs and to influence how *condor_q*
+    groups jobs for display. This value in a submit file can be
+    overridden by specifying the **-batch-name** argument on the
+    *condor_submit* command line.
+
  getenv = <<matchlist> | True | False>
     If **getenv** is set to
     :index:`copying current environment<single: copying current environment; environment variables>`\ ``True``,
@@ -502,7 +505,7 @@ BASIC COMMANDS
     match or reject names.
     Matchlist members are matched case-insensitively to each name
     in the environment and those that match are imported. Matchlist members can contain ``*`` as wildcard
-    character which matches anything at that postion.  Members can have two ``*`` characters if one of them
+    character which matches anything at that position.  Members can have two ``*`` characters if one of them
     is at the end. Members can be prefixed with ``!``
     to force a matching environment variable to not be imported.  The order of members in the Matchlist
     has no effect on the result.  ``getenv = true`` is equivalent to ``getenv = *``
@@ -562,16 +565,6 @@ BASIC COMMANDS
     current working directory as the job is submitted or the directory
     specified by submit command **initialdir** on the submit machine.
 
-    :index:`log_xml<single: log_xml; submit commands>`
- log_xml = <True | False>
-    If **log_xml** :index:`log_xml<single: log_xml; submit commands>` is
-    ``True``, then the job event log file will be written in ClassAd
-    XML. If not specified, XML is not used. Note that the file is an XML
-    fragment; it is missing the file header and footer. Do not mix XML
-    and non-XML within a single file. If multiple jobs write to a single
-    job event log file, ensure that all of the jobs specify this option
-    in the same way.
-
     :index:`e-mail related to a job<single: e-mail related to a job; notification>`
     :index:`notification<single: notification; submit commands>`
  notification = <Always | Complete | Error | Never>
@@ -616,6 +609,9 @@ BASIC COMMANDS
     directory of the machine where the job is executed. When the job
     exits, the resulting file is transferred back to the machine where
     the job was submitted, and the path is utilized for file placement.
+    If you specify a relative path, the final path will be relative to the
+    job's initial working directory, and HTCondor will create directories
+    as necessary to transfer the file.
     If not specified, the default value of ``/dev/null`` is used for
     submission to a Unix machine. If not specified, output is ignored
     for submission to a Windows machine. Multiple jobs should not use
@@ -776,6 +772,7 @@ BASIC COMMANDS
 COMMANDS FOR MATCHMAKING
 
     :index:`rank<single: rank; submit commands>`
+
  rank = <ClassAd Float Expression>
     A ClassAd Floating-Point expression that states how to rank machines
     which have already met the requirements expression. Essentially,
@@ -867,7 +864,7 @@ COMMANDS FOR MATCHMAKING
     to version 9.8.0. A warning to this will effect will be printed when *condor_submit* detects this condition.
 
     For pools that enable dynamic *condor_startd* provisioning and are at least version 9.8.0,
-    the constraint will be tested against the properties of AvailbleGPUs and only those that match
+    the constraint will be tested against the properties of AvailableGPUs and only those that match
     will be assigned to the dynamic slot.
 
     :index:`request_memory<single: request_memory; submit commands>`
@@ -976,6 +973,7 @@ FILE TRANSFER COMMANDS
 
     :index:`dont_encrypt_input_files<single: dont_encrypt_input_files; submit commands>`
     :index:`input file(s) encryption<single: input file(s) encryption; file transfer mechanism>`
+
  dont_encrypt_input_files = < file1,file2,file... >
     A comma and/or space separated list of input files that are not to
     be network encrypted when transferred with the file transfer
@@ -1202,17 +1200,18 @@ FILE TRANSFER COMMANDS
     example, ``/path/to/input_file`` becomes ``input_file`` in the job's
     scratch directory.
 
-    A directory may be specified by appending the forward slash
-    character (/) as a trailing path separator. This syntax is used for
-    both Windows and Linux submit hosts. A directory example using a
-    trailing path separator is ``input_data/``. When a directory is
-    specified with the trailing path separator, the contents of the
-    directory are transferred, but the directory itself is not
-    transferred. It is as if each of the items within the directory were
-    listed in the transfer list. When there is no trailing path
-    separator, the directory is transferred, its contents are
-    transferred, and these contents are placed inside the transferred
-    directory.
+    When a directory is specified, the behavior depends on whether
+    there is a trailing path separator character.  When a directory is
+    specified with a trailing path separator, it is as if each of the
+    items within the directory were listed in the transfer list.
+    Therefore, the contents are transferred, but the directory itself
+    is not. When there is no trailing path separator, the directory
+    itself is transferred with all of its contents inside it.  On
+    platforms such as Windows where the path separator is not a
+    forward slash (/), a trailing forward slash is treated as
+    equivalent to a trailing path separator.  An example of an input
+    directory specified with a trailing forward slash is
+    ``input_data/``.
 
     For grid universe jobs other than HTCondor-C, the transfer of
     directories is not currently supported.
@@ -1320,16 +1319,18 @@ FILE TRANSFER COMMANDS
     Note that this remap function only works with files but not with
     directories.
 
-    A directory may be specified using a trailing path separator. An
-    example of a trailing path separator is the slash character on Unix
-    platforms; a directory example using a trailing path separator is
-    ``input_data/``. When a directory is specified with a trailing path
-    separator, the contents of the directory are transferred, but the
-    directory itself is not transferred. It is as if each of the items
-    within the directory were listed in the transfer list. When there is
-    no trailing path separator, the directory is transferred, its
-    contents are transferred, and these contents are placed inside the
-    transferred directory.
+    When a directory is specified, the behavior depends on whether
+    there is a trailing path separator character.  When a directory is
+    specified with a trailing path separator, it is as if each of the
+    items within the directory were listed in the transfer list.
+    Therefore, the contents are transferred, but the directory itself
+    is not. When there is no trailing path separator, the directory
+    itself is transferred with all of its contents inside it.  On
+    platforms such as Windows where the path separator is not a
+    forward slash (/), a trailing forward slash is treated as
+    equivalent to a trailing path separator.  An example of an input
+    directory specified with a trailing forward slash is
+    ``input_data/``.
 
     For grid universe jobs other than HTCondor-C, the transfer of
     directories is not currently supported.
@@ -1373,7 +1374,8 @@ FILE TRANSFER COMMANDS
     same name they had in the execution directory. This gives you the
     option to save them with a different path or name. If you specify a
     relative path, the final path will be relative to the job's initial
-    working directory.
+    working directory, and HTCondor will create directories as necessary
+    to transfer the file.
 
     *name* describes an output file name produced by your job, and
     *newname* describes the file name it should be downloaded to.
@@ -1418,7 +1420,7 @@ FILE TRANSFER COMMANDS
     subdirectories and their contents will not be transferred.
 
     Setting ``when_to_transfer_output`` to ``ON_SUCCESS`` will cause HTCondor
-    to transfer the job's output files when the job completes succesfully.
+    to transfer the job's output files when the job completes successfully.
     Success is defined by the ``success_exit_code`` command, which must be
     set, even if the successful value is the default ``0``.  If
     ``transfer_output_files`` is not set, HTCondor considers all new files
@@ -1449,7 +1451,7 @@ FILE TRANSFER COMMANDS
 
     :index:`gs_access_key_id_file<single: gs_access_key_id_file; submit commands>`
  gs_access_key_id_file
-    Required if you specify a ``gs://`` URLs, ths command
+    Required if you specify a ``gs://`` URLs, this command
     specifies the file containing the access key ID (and only the access key
     ID) used to pre-sign the URLs.
 
@@ -1462,6 +1464,7 @@ FILE TRANSFER COMMANDS
 POLICY COMMANDS
 
     :index:`allowed_execute_duration<single: allowed_execute_duration; submit commands>`
+
  allowed_execute_duration = <integer>
     The longest time for which a job may be executing.  Jobs which exceed
     this duration will go on hold.  This time does not include file-transfer
@@ -1778,6 +1781,7 @@ POLICY COMMANDS
 COMMANDS FOR THE GRID
 
     :index:`arc_application<single: arc_application; submit commands>`
+
  arc_application = <XML-string>
     For grid universe jobs of type **arc**, provides additional XML
     attributes under the ``<Application>`` section of the ARC ADL job
@@ -1862,12 +1866,6 @@ COMMANDS FOR THE GRID
     Used for **batch** grid universe jobs.
     Specifies a limit in seconds on the execution time of the job.
     This limit is enforced by the PBS/LSF/SGE/SLURM scheduler.
-
-    :index:`boinc_authenticator_file<single: boinc_authenticator_file; submit commands>`
- boinc_authenticator_file = <pathname>
-    For grid type **boinc** jobs, specifies a path and file name of the
-    authorization file that grants permission for HTCondor to use the
-    BOINC service. There is no default value when not specified.
 
     :index:`cloud_label_names<single: cloud_label_names; submit commands>`
  cloud_label_names = <name0,name1,name...>
@@ -2117,7 +2115,7 @@ COMMANDS FOR THE GRID
     For each **grid-type-string** value, there are further type-specific
     values that must specified. This submit description file command
     allows each to be given in a space-separated list. Allowable
-    **grid-type-string** values are **arc**, **azure**, **batch**, **boinc**,
+    **grid-type-string** values are **arc**, **azure**, **batch**,
     **condor**, **ec2**, and **gce**.
     The HTCondor manual chapter on Grid Computing
     details the variety of grid types.
@@ -2136,49 +2134,6 @@ COMMANDS FOR THE GRID
 
     For a **grid-type-string** of **arc**, the single
     parameter is the name of the ARC resource to be used.
-
-    :index:`MyProxyCredentialName<single: MyProxyCredentialName; submit commands>`
- MyProxyCredentialName = <symbolic name>
-    The symbolic name that identifies a credential to the *MyProxy*
-    server. This symbolic name is set as the credential is initially
-    stored on the server (using *myproxy-init*).
-
-    :index:`MyProxyHost<single: MyProxyHost; submit commands>`
- MyProxyHost = <host>:<port>
-    The Internet address of the host that is the *MyProxy* server. The
-    **host** may be specified by either a host name (as in
-    ``head.example.com``) or an IP address (of the form 123.456.7.8).
-    The **port** number is an integer.
-
-    :index:`MyProxyNewProxyLifetime<single: MyProxyNewProxyLifetime; submit commands>`
- MyProxyNewProxyLifetime = <number-of-minutes>
-    The new lifetime (in minutes) of the proxy after it is refreshed.
-
-    :index:`MyProxyPassword<single: MyProxyPassword; submit commands>`
- MyProxyPassword = <password>
-    The password needed to refresh a credential on the *MyProxy* server.
-    This password is set when the user initially stores credentials on
-    the server (using *myproxy-init*). As an alternative to using
-    **MyProxyPassword** :index:`MyProxyPassword<single: MyProxyPassword; submit commands>`
-    in the submit description file, the password may be specified as a
-    command line argument to *condor_submit* with the *-password*
-    argument.
-
-    :index:`MyProxyRefreshThreshold<single: MyProxyRefreshThreshold; submit commands>`
- MyProxyRefreshThreshold = <number-of-seconds>
-    The time (in seconds) before the expiration of a proxy that the
-    proxy should be refreshed. For example, if
-    **MyProxyRefreshThreshold** :index:`MyProxyRefreshThreshold<single: MyProxyRefreshThreshold; submit commands>`
-    is set to the value 600, the proxy will be refreshed 10 minutes
-    before it expires.
-
-    :index:`MyProxyServerDN<single: MyProxyServerDN; submit commands>`
- MyProxyServerDN = <credential subject>
-    A string that specifies the expected Distinguished Name (credential
-    subject, abbreviated DN) of the *MyProxy* server. It must be
-    specified when the *MyProxy* server DN does not follow the
-    conventional naming scheme of a host credential. This occurs, for
-    example, when the *MyProxy* server DN begins with a user credential.
 
     :index:`transfer_error<single: transfer_error; submit commands>`
  transfer_error = <True | False>
@@ -2281,6 +2236,7 @@ COMMANDS FOR THE GRID
 COMMANDS FOR PARALLEL, JAVA, and SCHEDULER UNIVERSES
 
     :index:`hold_kill_sig<single: hold_kill_sig; submit commands>`
+
  hold_kill_sig = <signal-number>
     For the scheduler universe only,
     **signal-number** :index:`signal-number<single: signal-number; submit commands>` is
@@ -2330,6 +2286,7 @@ COMMANDS FOR PARALLEL, JAVA, and SCHEDULER UNIVERSES
 COMMANDS FOR THE VM UNIVERSE
 
     :index:`vm_disk<single: vm_disk; submit commands>`
+
  vm_disk = file1:device1:permission1, file2:device2:permission2:format2, ...
     A list of comma separated disk files. Each disk file is specified by
     4 colon separated fields. The first field is the path and file name
@@ -2393,34 +2350,9 @@ COMMANDS FOR THE VM UNIVERSE
     specified, the default value is ``False``.
 
     :index:`vm_type<single: vm_type; submit commands>`
- vm_type = <vmware | xen | kvm>
+ vm_type = <xen | kvm>
     Specifies the underlying virtual machine software that this job
     expects.
-
-    :index:`vmware_dir<single: vmware_dir; submit commands>`
- vmware_dir = <pathname>
-    The complete path and name of the directory where VMware-specific
-    files and applications such as the VMDK (Virtual Machine Disk
-    Format) and VMX (Virtual Machine Configuration) reside. This command
-    is optional; when not specified, all relevant VMware image files are
-    to be listed using
-    **transfer_input_files** :index:`transfer_input_files<single: transfer_input_files; submit commands>`.
-
-    :index:`vmware_should_transfer_files<single: vmware_should_transfer_files; submit commands>`
- vmware_should_transfer_files = <True | False>
-    Specifies whether HTCondor will transfer VMware-specific files
-    located as specified by
-    **vmware_dir** :index:`vmware_dir<single: vmware_dir; submit commands>` to the
-    execute machine (``True``) or rely on access through a shared file
-    system (``False``). Omission of this required command (for VMware vm
-    universe jobs) results in an error message from *condor_submit*,
-    and the job will not be submitted.
-
-    :index:`vmware_snapshot_disk<single: vmware_snapshot_disk; submit commands>`
- vmware_snapshot_disk = <True | False>
-    When ``True``, causes HTCondor to utilize a VMware snapshot disk for
-    new or modified files. If not specified, the default value is
-    ``True``.
 
     :index:`xen_initrd<single: xen_initrd; submit commands>`
  xen_initrd = <image-file>
@@ -2454,6 +2386,7 @@ COMMANDS FOR THE VM UNIVERSE
 COMMANDS FOR THE DOCKER UNIVERSE
 
     :index:`docker_image<single: docker_image; submit commands>`
+
  docker_image = < image-name >
     Defines the name of the Docker image that is the basis for the
     docker container.
@@ -2466,6 +2399,17 @@ COMMANDS FOR THE DOCKER UNIVERSE
     a private network interface.  Some administrators may define
     site specific docker networks on a given worker node.  When this
     is the case, additional values may be valid here.
+
+    :index:`docker_pull_policy<single: docker_pull_policy; submit commands>`
+ docker_pull_policy = < always >
+    if docker_pull_policy is set to *always*, when a docker universe job
+    starts on a worker node, the option "--pull always" will be passed to
+    the docker run command.  This only impacts worker nodes which already
+    have a locally cached version of the image.  With this option, docker will
+    always check with the repo to see if the cached version is out of date.
+    This requires more network connectivity, and may cause docker hub to 
+    throttle future pull requests.  It is generally recommened to never 
+    mutate docker image tag name, and avoid needing this option.
 
     :index:`container_service_names<single: container_service_names; submit commands>`
  container_service_names = <service-name>[, <service-name>]*
@@ -2480,7 +2424,9 @@ COMMANDS FOR THE DOCKER UNIVERSE
     service.
 
 COMMANDS FOR THE CONTAINER UNIVERSE
+
     :index:`container_image<single: container_image; submit commands>`
+
  container_image = < image-name >
     Defines the name of the container image. Can be a singularity .sif file,
     a singularity exploded directory, or a path to an image in a docker style 
@@ -2494,6 +2440,7 @@ COMMANDS FOR THE CONTAINER UNIVERSE
 ADVANCED COMMANDS
 
     :index:`accounting_group<single: accounting_group; submit commands>`
+
  accounting_group = <accounting-group-name>
     Causes jobs to negotiate under the given accounting group. This
     value is advertised in the job ClassAd as ``AcctGroup``. The
@@ -2712,15 +2659,6 @@ ADVANCED COMMANDS
     entries` page), but it applies to the job event log, instead of the system
     event log.
 
-    :index:`batch_name<single: batch_name; submit commands>`
- batch_name = <batch_name>
-    Set the batch name for this submit. The batch name is displayed by
-    *condor_q* **-batch**. It is intended for use by users to give
-    meaningful names to their jobs and to influence how *condor_q*
-    groups jobs for display. This value in a submit file can be
-    overridden by specifying the **-batch-name** argument on the
-    *condor_submit* command line.
-
     :index:`job_lease_duration<single: job_lease_duration; submit commands>`
  job_lease_duration = <number-of-seconds>
     For vanilla, parallel, VM, and java universe jobs only, the duration
@@ -2799,6 +2737,16 @@ ADVANCED COMMANDS
     When ``True``, loads the account profile of the dedicated run
     account for Windows jobs. May not be used with
     **run_as_owner** :index:`run_as_owner<single: run_as_owner; submit commands>`.
+
+    :index:`log_xml<single: log_xml; submit commands>`
+ log_xml = <True | False>
+    If **log_xml** :index:`log_xml<single: log_xml; submit commands>` is
+    ``True``, then the job event log file will be written in ClassAd
+    XML. If not specified, XML is not used. Note that the file is an XML
+    fragment; it is missing the file header and footer. Do not mix XML
+    and non-XML within a single file. If multiple jobs write to a single
+    job event log file, ensure that all of the jobs specify this option
+    in the same way.
 
     :index:`match_list_length<single: match_list_length; submit commands>`
  match_list_length = <integer value>
@@ -2978,7 +2926,7 @@ ADVANCED COMMANDS
 
     :index:`use_oauth_services<single: use_oauth_services; submit commands>`
  use_oauth_services = <list of credential service names>
-    A comma-separated list of crendential-providing service names for
+    A comma-separated list of credential-providing service names for
     which the job should be provided credentials for the job execution
     environment. The credential service providers must be configured by
     the pool admin.
@@ -3153,7 +3101,7 @@ and comments.
     On the machine, if the attribute ``input_file_path`` is not defined,
     then the path ``/usr/foo`` is used instead.
 
-    As a special case that only works within the submit file *environement*
+    As a special case that only works within the submit file *environment*
     command, the string $$(CondorScratchDir) is expanded to the value
     of the job's scratch directory.  This does not work for scheduler universe
     or grid universe jobs.
