@@ -28,10 +28,13 @@
 #include <set>
 #include <algorithm>
 #include <sstream>
+#include <charconv>
 
 #ifdef WIN32
 #include "winreg.windows.h"
 #endif
+
+#include "docker-api.h"
 
 MachAttributes::MachAttributes()
    : m_user_specified(NULL, ";"), m_user_settings_init(false), m_named_chroot()
@@ -63,6 +66,8 @@ MachAttributes::MachAttributes()
 	m_load = -1.0;
 	m_owner_load = -1.0;
 	m_virt_mem = 0;
+	m_docker_cached_image_size = -1;
+	m_docker_cached_image_size_time = time(nullptr) - docker_cached_image_size_interval;
 
 		// Number of CPUs.  Since this is used heavily by the ResMgr
 		// instantiation and initialization, we need to have a real
@@ -449,17 +454,32 @@ MachAttributes::compute_config()
 			dprintf(D_FULLDEBUG, "Named chroots: %s\n", result_str.c_str() );
 			m_named_chroot = result_str;
 		}
-
 	}
 }
 
 void
 MachAttributes::compute_for_update()
 {
+
 	{  // formerly IS_UPDATE(how_much) && IS_SHARED(how_much)
 
 		m_virt_mem = sysapi_swap_space();
 		dprintf( D_FULLDEBUG, "Swap space: %lld\n", m_virt_mem );
+
+		time_t now = resmgr->now();
+		time_t interval = (now - m_docker_cached_image_size_time);
+		if (docker_cached_image_size_interval && (interval >= docker_cached_image_size_interval)) {
+			m_docker_cached_image_size_time = now;
+			int64_t size_in_bytes = DockerAPI::imageCacheUsed();
+			if (size_in_bytes >= 0) {
+				const int64_t ONEMB =  1024 * 1024;
+				m_docker_cached_image_size = (DockerAPI::imageCacheUsed() + ONEMB/2) / ONEMB;
+			} else {
+				// negative values returned above indicate failure to fetch the imageSize
+				// negative values here suppress advertise of the attribute
+				m_docker_cached_image_size = -1;
+			}
+		}
 
 #if defined(WIN32)
 		credd_test();
@@ -1208,6 +1228,65 @@ static bool hasUnprivUserNamespace() {
 	return hasNamespace;
 }
 
+enum class rotational_result {
+	ROTATIONAL, NOT_ROTATIONAL, UNKNOWN	
+};
+static rotational_result hasRotationalScratch() {
+
+	std::string executeDir;
+	param(executeDir, "EXECUTE");
+
+	struct stat buf;
+	int r = stat(executeDir.c_str(), &buf);
+
+	if (r != 0) {
+		// Huh.  Just don't know
+		return rotational_result::UNKNOWN;
+	}
+	char maj[8];
+	char min[8];
+	{
+	auto [ptr, ec] = std::to_chars(maj, maj+7, buf.st_dev >> 8);
+	*ptr = '\0';
+	}
+	{
+	auto [ptr, ec] = std::to_chars(min, min+7, buf.st_dev & 0xff);
+	*ptr = '\0';
+	}
+
+	dev_t major_device = buf.st_dev >> 8;
+
+	// major device 0 is memory device, ramdisk or tmpfs
+	if (major_device == 0) {
+		return rotational_result::NOT_ROTATIONAL; 
+	}
+
+
+	// Example path: /sys/dev/block/253:5/queue/rotational -- contains '0' or '1'
+	std::string rotate_path = "/sys/dev/block/";
+	rotate_path += maj;
+	rotate_path += ':';
+	rotate_path += min;
+	rotate_path += "/queue/rotational";
+
+	FILE *f = fopen(rotate_path.c_str(), "r");
+	char c = '\0';
+	if (f) {
+		size_t r = fread(&c, 1, 1, f);
+		fclose(f);
+		if (r != 1) {
+			return rotational_result::UNKNOWN;
+		}
+		if (c == '1') {
+			return rotational_result::ROTATIONAL;
+		} else {
+			return rotational_result::NOT_ROTATIONAL;
+		}
+	} else {
+		return rotational_result::UNKNOWN;
+	}
+}
+
 #endif
 
 void 
@@ -1270,8 +1349,6 @@ MachAttributes::publish_static(ClassAd* cp)
 	while (AttribValue *pav = m_lst_static.Next()) {
 		if (pav) pav->AssignToClassAd(cp);
 	}
-
-	if (m_local_credd) { cp->Assign(ATTR_LOCAL_CREDD, m_local_credd); }
 
 #else
 	// temporary attributes for raw utsname info
@@ -1375,11 +1452,24 @@ MachAttributes::publish_static(ClassAd* cp)
 	if (hasUnprivUserNamespace()) {
 		cp->Assign(ATTR_HAS_USER_NAMESPACES, true);
 	}
+
+	switch (hasRotationalScratch()) {
+		case rotational_result::ROTATIONAL:
+		cp->Assign(ATTR_HAS_ROTATIONAL_SCRATCH, true);
+		break;
+		case rotational_result::NOT_ROTATIONAL:
+		cp->Assign(ATTR_HAS_ROTATIONAL_SCRATCH, false);
+		break;
+		case rotational_result::UNKNOWN:
+		dprintf(D_ALWAYS, "Cannot determine rotationality of execute dir, leaving it undefined\n");
+		break;
+
+	}
 #endif
 	// Temporary Hack until this is a fixed path
 	// the Starter will expand this magic string to the
 	// actual value
-	cp->Assign("CondorScratchDir", "#CoNdOrScRaTcHdIr#");
+	cp->Assign(ATTR_CONDOR_SCRATCH_DIR, "#CoNdOrScRaTcHdIr#");
 }
 
 // return true if the given slot has resources that are assigned to both normal and backfill
@@ -1402,11 +1492,19 @@ MachAttributes::publish_common_dynamic(ClassAd* cp)
 {
 	// things that need to be refreshed periodially
 
+#ifdef WIN32
+	// we periodically probe to see if there is a valid local credd.
+	if (m_local_credd) { cp->Assign(ATTR_LOCAL_CREDD, m_local_credd); }
+#endif
+
 	// KFLOPS and MIPS are only conditionally computed; thus, only
 	// advertise them if we computed them.
 	if (m_kflops > 0) { cp->Assign( ATTR_KFLOPS, m_kflops ); }
 	if (m_mips > 0) { cp->Assign( ATTR_MIPS, m_mips ); }
 
+	if (m_docker_cached_image_size >= 0) {
+		cp->Assign(ATTR_DOCKER_CACHED_IMAGE_SIZE, m_docker_cached_image_size);
+	}
 	// publish offline ids for any of the resources
 	for (auto j(m_machres_map.begin());  j != m_machres_map.end();  ++j) {
 		string ids;
@@ -1434,7 +1532,7 @@ MachAttributes::publish_common_dynamic(ClassAd* cp)
 		} else if (k != m_machres_offline_devIds_map.end()) {
 			// we just have the static offline ids list (set at startup)
 			if ( ! k->second.empty()) {
-				join(k->second, ",", ids);
+				ids = join(k->second, ",");
 			}
 		}
 		string attr(ATTR_OFFLINE_PREFIX); attr += j->first;
@@ -1648,7 +1746,7 @@ MachAttributes::credd_test()
 #endif
 
 CpuAttributes::CpuAttributes( MachAttributes* map_arg, 
-							  int slot_type,
+							  unsigned int slot_type,
 							  double num_cpus_arg,
 							  int num_phys_mem,
 							  double virt_mem_fraction,
@@ -1659,7 +1757,7 @@ CpuAttributes::CpuAttributes( MachAttributes* map_arg,
 							  const std::string &execute_partition_id )
 {
 	map = map_arg;
-	c_type = slot_type;
+	c_type_id = slot_type;
 	c_num_slot_cpus = c_num_cpus = num_cpus_arg;
 	c_allow_fractional_cpus = num_cpus_arg > 0 && num_cpus_arg < 0.9;
 	c_slot_mem = c_phys_mem = num_phys_mem;
@@ -1907,10 +2005,9 @@ CpuAttributes::publish_static(ClassAd* cp)
 			cp->Assign(attr, int(c_slottot_map[j->first]));          // example: set TotalSlotGPUs = 2
 			slotres_devIds_map_t::const_iterator k(c_slotres_ids_map.find(j->first));
 			if (k != c_slotres_ids_map.end()) {
-				ids.clear();
 				attr = "Assigned";
 				attr += j->first;
-				join(k->second, ",", ids);  // k->second is type slotres_assigned_ids_t which is vector<string>
+				ids = join(k->second, ",");  // k->second is type slotres_assigned_ids_t which is vector<string>
 				cp->Assign(attr, ids);   // example: AssignedGPUs = "GPU-01abcdef,GPU-02bcdefa"
 			} else {
 				continue;
@@ -1957,9 +2054,9 @@ CpuAttributes::display(int dpf_flags) const
 {
 	// dpf_flags is expected to be 0 or D_VERBOSE
 	dprintf( D_KEYBOARD | dpf_flags,
-				"Idle time: %s %-8d %s %d\n",
-				"Keyboard:", (int)c_idle, 
-				"Console:", (int)c_console_idle );
+				"Idle time: %s %-8lld %s %lld\n",
+				"Keyboard:", (long long)c_idle,
+				"Console:", (long long)c_console_idle );
 
 	dprintf( D_LOAD | dpf_flags,
 				"%s %.2f  %s %.2f  %s %.2f\n",

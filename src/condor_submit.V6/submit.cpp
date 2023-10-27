@@ -106,6 +106,7 @@ std::string ScheddAddr;
 AbstractScheddQ * MyQ = NULL;
 char	*PoolName = NULL;
 DCSchedd* MySchedd = NULL;
+MapFile *protectedUrlMap = nullptr;
 
 char	*My_fs_domain;
 
@@ -252,10 +253,10 @@ void ReportSubmitException(const char * msg, int /*src_line*/, const char * /*sr
 {
 	char loc[100];
 	switch (ErrContext.phase) {
-	case PHASE_READ_SUBMIT: sprintf(loc, " on Line %d of submit file", FileMacroSource.line); break;
-	case PHASE_DASH_APPEND: sprintf(loc, " with -a argument #%d", ExtraLineNo); break;
-	case PHASE_QUEUE:       sprintf(loc, " at Queue statement on Line %d", FileMacroSource.line); break;
-	case PHASE_QUEUE_ARG:   sprintf(loc, " with -queue argument"); break;
+	case PHASE_READ_SUBMIT: snprintf(loc, sizeof(loc), " on Line %d of submit file", FileMacroSource.line); break;
+	case PHASE_DASH_APPEND: snprintf(loc, sizeof(loc), " with -a argument #%d", ExtraLineNo); break;
+	case PHASE_QUEUE:       snprintf(loc, sizeof(loc), " at Queue statement on Line %d", FileMacroSource.line); break;
+	case PHASE_QUEUE_ARG:   snprintf(loc, sizeof(loc), " with -queue argument"); break;
 	default: loc[0] = 0; break;
 	}
 
@@ -940,7 +941,7 @@ main( int argc, const char *argv[] )
 		std::string userdom;
 		auto_free_ptr the_username(my_username());
 		auto_free_ptr the_domainname(my_domainname());
-		userdom = the_username;
+		userdom = the_username.ptr();
 		userdom += "@";
 		if (the_domainname) { userdom += the_domainname.ptr(); }
 
@@ -949,7 +950,7 @@ main( int argc, const char *argv[] )
 		int store_cred_result;
 		Daemon my_credd(DT_CREDD);
 		if (my_credd.locate()) {
-			store_cred_result = do_store_cred(userdom.c_str(), NULL, QUERY_PWD_MODE, &my_credd);
+			store_cred_result = do_store_cred_passwd(userdom.c_str(), NULL, QUERY_PWD_MODE, &my_credd);
 			if ( store_cred_result == SUCCESS ||
 							store_cred_result == FAILURE_NO_IMPERSONATE) {
 				cred_is_stored = true;
@@ -958,7 +959,7 @@ main( int argc, const char *argv[] )
 
 		if (!cred_is_stored) {
 			// query the schedd
-			store_cred_result = do_store_cred(userdom.c_str(), NULL, QUERY_PWD_MODE, MySchedd);
+			store_cred_result = do_store_cred_passwd(userdom.c_str(), NULL, QUERY_PWD_MODE, MySchedd);
 			if ( store_cred_result == SUCCESS ||
 							store_cred_result == FAILURE_NO_IMPERSONATE) {
 				cred_is_stored = true;
@@ -1078,6 +1079,7 @@ main( int argc, const char *argv[] )
 		as_factory = (dash_factory ? 1 : 0) | (default_to_factory ? (1|2) : 0);
 	}
 	int rval = submit_jobs(fp, FileMacroSource, as_factory, extraLines, queueCommandLine);
+	if (protectedUrlMap) { delete protectedUrlMap; protectedUrlMap = nullptr; }
 	if( rval < 0 ) {
 		if( ExtraLineNo == 0 ) {
 			fprintf( stderr,
@@ -1268,7 +1270,7 @@ main( int argc, const char *argv[] )
 			sshargs[i++] = "-name";
 			sshargs[i++] = ScheddName;
 		}
-		sprintf(jobid,"%d.0",ClusterId);
+		snprintf(jobid, sizeof(jobid), "%d.0", ClusterId);
 		sshargs[i++] = jobid;
 		sleep(3);	// with luck, schedd will start the job while we sleep
 		// We cannot fork before calling ssh_to_job, since ssh will want
@@ -1858,15 +1860,16 @@ int submit_jobs (
 				// otherwise we just fall back to non-factory submit
 				want_factory = 0;
 			}
+
+			ClassAd extended_submit_commands;
+			if (MyQ->has_extended_submit_commands(extended_submit_commands)) {
+				submit_hash.addExtendedCommands(extended_submit_commands);
+			}
+			submit_hash.attachTransferMap(protectedUrlMap);
 		}
 
 		// At this point we really expect to  have a working queue connection (possibly simulated)
 		if ( ! MyQ) { rval = -1; break; }
-
-		ClassAd extended_submit_commands;
-		if (MyQ->has_extended_submit_commands(extended_submit_commands)) {
-			submit_hash.addExtendedCommands(extended_submit_commands);
-		}
 
 		// allocate a cluster object if this is the first time through the loop, or if the executable changed.
 		if (NewExecutable || (ClusterId < 0)) {
@@ -2009,6 +2012,8 @@ int submit_jobs (
 
 	} // end for(;;)
 
+	submit_hash.detachTransferMap();
+
 	// report errors from submit
 	//
 	if( rval < 0 ) {
@@ -2125,7 +2130,7 @@ int queue_connect()
 static char ClusterString[20]="1", ProcessString[20]="0", EmptyItemString[] = "";
 void init_vars(SubmitHash & hash, int cluster_id, StringList & vars)
 {
-	sprintf(ClusterString, "%d", cluster_id);
+	snprintf(ClusterString, sizeof(ClusterString), "%d", cluster_id);
 	strcpy(ProcessString, "0");
 
 	// establish live buffers for $(Cluster) and $(Process), and other loop variables
@@ -2238,11 +2243,20 @@ int allocate_a_cluster()
 		exit(1);
 	}
 
-	if ((ClusterId = MyQ->get_NewCluster()) < 0) {
-		fprintf(stderr, "\nERROR: Failed to create cluster\n");
-		if ( ClusterId == -2 ) {
+	CondorError errstack;
+	if ((ClusterId = MyQ->get_NewCluster(errstack)) < 0) {
+		const char * msg = "Failed to create cluster";
+		if (errstack.message()) { msg = errstack.message(); }
+		fprintf(stderr, "\nERROR: %s\n", msg);
+		if ( ClusterId == NEWJOB_ERR_MAX_JOBS_SUBMITTED ) {
 			fprintf(stderr,
 				"Number of submitted jobs would exceed MAX_JOBS_SUBMITTED\n");
+		} else if ( ClusterId == NEWJOB_ERR_MAX_JOBS_PER_OWNER ) {
+			fprintf(stderr,
+				"Number of submitted jobs would exceed MAX_JOBS_PER_OWNER\n");
+		} else if ( ClusterId == NEWJOB_ERR_DISABLED_USER ) {
+			fprintf(stderr,
+				"User is disabled\n");
 		}
 		exit(1);
 	}
@@ -2312,13 +2326,13 @@ int queue_item(int num, StringList & vars, char * item, int item_index, int opti
 
 		if ( ProcId < 0 ) {
 			fprintf(stderr, "\nERROR: Failed to create proc\n");
-			if ( ProcId == -2 ) {
+			if ( ProcId == NEWJOB_ERR_MAX_JOBS_SUBMITTED ) {
 				fprintf(stderr,
 				"Number of submitted jobs would exceed MAX_JOBS_SUBMITTED\n");
-			} else if( ProcId == -3 ) {
+			} else if( ProcId == NEWJOB_ERR_MAX_JOBS_PER_OWNER ) {
 				fprintf(stderr,
 				"Number of submitted jobs would exceed MAX_JOBS_PER_OWNER\n");
-			} else if( ProcId == -4 ) {
+			} else if( ProcId == NEWJOB_ERR_MAX_JOBS_PER_SUBMISSION ) {
 				fprintf(stderr,
 				"Number of submitted jobs would exceed MAX_JOBS_PER_SUBMISSION\n");
 			}
@@ -2333,8 +2347,8 @@ int queue_item(int num, StringList & vars, char * item, int item_index, int opti
 		}
 
 		// update the live $(Cluster), $(Process) and $(Step) string buffers
-		(void)sprintf(ClusterString, "%d", ClusterId);
-		(void)sprintf(ProcessString, "%d", ProcId);
+		(void)snprintf(ClusterString, sizeof(ClusterString), "%d", ClusterId);
+		(void)snprintf(ProcessString, sizeof(ProcessString), "%d", ProcId);
 
 		// we move this outside the above, otherwise it appears that we have 
 		// received no queue command (or several, if there were multiple ones)
@@ -2545,6 +2559,7 @@ init_params()
 		setattrflags &= ~SetAttribute_NoAck; // clear noack flag
 	}
 
+	protectedUrlMap = getProtectedURLMap();
 }
 
 
@@ -2687,8 +2702,42 @@ int process_job_credentials()
 			for (const char * request = request_list.first(); request != NULL; request = request_list.next()) {
 				args.AppendArg(request);
 			}
-			if (my_system(args) != 0) {
-				fprintf(stderr, "\nERROR: (%i) invoking %s\n", errno, storer.c_str());
+
+			if (DashDryRun & (2|4)) { // bits 2 and 4 dry run the OAuth stuff
+				std::string buf;
+				args.GetArgsStringForLogging(buf);
+				fprintf(stdout, "::SEC_CREDENTIAL_STORER(%s)\n", buf.c_str());
+				if ( ! (DashDryRun & 4)) { 
+					// simulate failure
+					fprintf(stderr, "\nERROR: (dry-run) invoking %s\n", storer.c_str());
+					exit(1);
+				}
+				sent_credential_to_credd = true;
+				return 0; // simulated success
+			}
+
+			const bool want_stderr = true;
+			MyPopenTimer pgm;
+			if (pgm.start_program(args, want_stderr) < 0) {
+				fprintf(stderr, "\nERROR: (%i) invoking SEC_CREDENIAL_STORER=%s\n", pgm.error_code(), storer.c_str());
+				exit(1);
+			}
+			int timeout = 20*60;
+			int exit_status = 0;
+			bool exited = pgm.wait_for_exit(timeout, &exit_status);
+			pgm.close_program(1); // close fp, wait 1 sec, then SIGKILL (does nothing if program already exited)
+			if ( ! exited) {
+				fprintf(stderr, "\nWARNING: SEC_CREDENIAL_STORER=%s did not exit\n", storer.c_str());
+			}
+			if (DashDryRun && pgm.output_size()) {
+				fprintf(stdout, "::SEC_CREDENTIAL_STORER=%s exit=%d, output:\n", storer.c_str(), exit_status);
+				std::string line;
+				while (pgm.output().readLine(line)) { fputs(line.c_str(), stdout); }
+				fprintf(stdout, "::end of SEC_CREDENTIAL_STORER output\n");
+			}
+			if (exit_status != 0) {
+				fprintf(stderr, "\nERROR: SEC_CREDENTIAL_STORER=%s exited with status=%d\n",
+					storer.c_str(), exit_status);
 				exit(1);
 			}
 			sent_credential_to_credd = true;

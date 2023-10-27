@@ -22,6 +22,7 @@
 #include <pthread.h>
 #include <signal.h>
 #include <time.h>
+#include <openssl/crypto.h>
 
 #include "condor_config.h"
 #include "condor_debug.h"
@@ -32,6 +33,7 @@
 #include "arcgahp_common.h"
 #include "arcCommands.h"
 #include "subsystem_info.h"
+#include <algorithm>
 
 #define ARC_GAHP_VERSION	"0.1"
 
@@ -59,7 +61,40 @@ static void *worker_function( void *ptr );
  * blocking when we do network communication and SOAP/WS_SECURITY processing.
  */
 pthread_mutex_t global_big_mutex = PTHREAD_MUTEX_INITIALIZER;
+bool lock_for_curl = true;
 #include "thread_control.h"
+
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
+static pthread_mutex_t* openssl_mutexes = NULL;
+
+static void openssl_lock_func(int mode, int n, const char* /*file*/, int /*line*/)
+{
+	if (mode & CRYPTO_LOCK) {
+		pthread_mutex_lock(&openssl_mutexes[n]);
+	} else {
+		pthread_mutex_unlock(&openssl_mutexes[n]);
+	}
+}
+
+static void openssl_tid_func(CRYPTO_THREADID* tid)
+{
+	CRYPTO_THREADID_set_numeric(tid, (unsigned long)pthread_self());
+}
+
+void openssl_thread_setup()
+{
+	openssl_mutexes = (pthread_mutex_t*)malloc(CRYPTO_num_locks() * sizeof(pthread_mutex_t));
+	for (int i = 0; i < CRYPTO_num_locks(); i++) {
+		openssl_mutexes[i] = PTHREAD_MUTEX_INITIALIZER;
+	}
+	CRYPTO_THREADID_set_callback(openssl_tid_func);
+	CRYPTO_set_locking_callback(openssl_lock_func);
+}
+#else
+void openssl_thread_setup()
+{
+}
+#endif
 
 static void io_process_exit(int exit_num)
 {
@@ -198,6 +233,19 @@ main( int argc, char ** const argv )
 
 	dprintf(D_FULLDEBUG, "Welcome to the ARC CE REST GAHP\n");
 
+	// Configure OpenSSL thread locking, if necessary
+	openssl_thread_setup();
+
+	lock_for_curl = ! param_boolean("ARC_GAHP_USE_THREADS", false);
+
+	// curl_global_init() is not thread-safe. Call it now before we
+	// create any threads.
+	CURLcode rv = curl_global_init( CURL_GLOBAL_ALL );
+	if( rv != 0 ) {
+		dprintf(D_ALWAYS, "curl_global_init() failed, failing.\n");
+		exit(1);
+	}
+
 	const char *buff;
 
 	//Try to read env for arc_http_proxy
@@ -233,7 +281,7 @@ main( int argc, char ** const argv )
 
 	// check to see if we're going to quit after a certain time
 	time_t die_time = 0;
-	int lifetime = param_integer("ARC_GAHP_LIFETIME", 86400);
+	int lifetime = param_integer("ARC_GAHP_LIFETIME", 0);
 	if (lifetime) {
 		die_time = time(0) + lifetime;
 	}
@@ -319,13 +367,10 @@ Worker::Worker(int worker_id)
 
 Worker::~Worker()
 {
-	GahpRequest *request = NULL;
-
-	m_request_list.Rewind();
-	while( m_request_list.Next(request) ) {
-		m_request_list.DeleteCurrent();
+	for (auto request : m_request_list) {
 		delete request;
 	}
+	m_request_list.clear();
 
 	pthread_cond_destroy(&m_cond);
 }
@@ -333,20 +378,25 @@ Worker::~Worker()
 bool
 Worker::removeRequest(int req_id)
 {
-	GahpRequest *request = NULL;
 
-	m_request_list.Rewind();
-	while( m_request_list.Next(request) ) {
-
-		if( request->m_reqid == req_id ) {
-			// remove this request from worker request queue
-			m_request_list.DeleteCurrent();
+	auto delete_req_id = [req_id](GahpRequest *request) {
+		if (request->m_reqid == req_id) {
 			delete request;
 			return true;
+		} else {
+			return false;
 		}
-	}
+	};
 
-	return false;
+	auto it = std::remove_if(m_request_list.begin(), m_request_list.end(),
+			delete_req_id);
+
+	if (it != m_request_list.end()) {
+		m_request_list.erase(it);
+		return true;
+	} else {
+		return false;
+	}
 }
 
 
@@ -524,70 +574,47 @@ IOProcess::stdinPipeHandler()
 Worker*
 IOProcess::createNewWorker(void)
 {
-	Worker *new_worker = NULL;
-	new_worker = new Worker(newWorkerId());
+	int new_id = newWorkerId();
+	auto [it, success] = m_workers_list.emplace(new_id, Worker(new_id));
+	ASSERT(success);
+	Worker& new_worker = it->second;
 
 	dprintf (D_FULLDEBUG, "About to start a new thread\n");
 
 	// Create pthread
 	pthread_t thread;
 	if( pthread_create(&thread, NULL,
-				worker_function, (void *)new_worker) !=  0 ) {
+				worker_function, (void *)&new_worker) !=  0 ) {
 		dprintf(D_ALWAYS, "Failed to create a new thread\n");
 
-		delete new_worker;
-		return NULL;
+		m_workers_list.erase(it);
+		return nullptr;
 	}
 
 	// Deatch this thread
 	pthread_detach(thread);
 
-	// Insert a new worker to the map
-	m_workers_list[new_worker->m_id] = new_worker;
 	m_avail_workers_num++;
 
-	dprintf(D_FULLDEBUG, "New Worker[id=%d] is created!\n", new_worker->m_id);
-	return new_worker;
+	dprintf(D_FULLDEBUG, "New Worker[id=%d] is created!\n", new_worker.m_id);
+	return &new_worker;
 }
 
 Worker*
 IOProcess::findFreeWorker(void)
 {
-	for( auto worker : m_workers_list ) {
-
-		if( !worker.second->m_is_doing ) {
-
-			return worker.second;
+	for (auto& [key, worker]: m_workers_list) {
+		if (!worker.m_is_doing) {
+			return &worker;
 		}
-
 	}
-	return NULL;
-}
-
-Worker*
-IOProcess::findWorker(int id)
-{
-	Worker *worker = NULL;
-
-	auto itr = m_workers_list.find(id);
-	if ( itr != m_workers_list.end() ) {
-		worker = itr->second;
-	}
-	return worker;
+	return nullptr;
 }
 
 bool
 IOProcess::removeWorkerFromWorkerList(int id)
 {
-	Worker* worker = findWorker(id);
-	if( worker ) {
-		m_workers_list.erase(id);
-
-		delete worker;
-		return true;
-	}
-
-	return false;
+	return (m_workers_list.erase(id) > 0);
 }
 
 GahpRequest*
@@ -640,7 +667,7 @@ IOProcess::newWorkerId(void)
 	int starting_worker_id = m_next_worker_id++;
 
 	while( starting_worker_id != m_next_worker_id ) {
-		if( m_next_worker_id > 990000000 ) {
+		if( m_next_worker_id > 990'000'000 ) {
 			m_next_worker_id = 1;
 			m_rotated_worker_ids = true;
 		}
@@ -650,8 +677,7 @@ IOProcess::newWorkerId(void)
 		}
 
 		// Make certain this worker_id is not already in use
-		auto itr = m_workers_list.find(m_next_worker_id);
-		if( itr == m_workers_list.end() ) {
+		if (m_workers_list.find(m_next_worker_id) == m_workers_list.end()) {
 			// not in use, we are done
 			return m_next_worker_id;
 		}
@@ -676,7 +702,7 @@ IOProcess::addRequestToWorker(GahpRequest* request, Worker* worker)
 				request->m_raw_cmd.c_str(), worker->m_id);
 
 		request->m_worker = worker;
-		worker->m_request_list.Append(request);
+		worker->m_request_list.push_back(request);
 		worker->m_is_doing = true;
 
 		if( worker->m_is_waiting ) {
@@ -689,7 +715,7 @@ IOProcess::addRequestToWorker(GahpRequest* request, Worker* worker)
 		dprintf (D_FULLDEBUG, "Appending %s to global pending request list\n",
 				request->m_raw_cmd.c_str());
 
-		m_pending_req_list.Append(request);
+		m_pending_req_list.push_back(request);
 	}
 }
 
@@ -697,7 +723,7 @@ int
 IOProcess::numOfPendingRequest(void)
 {
 	int num = 0;
-	num = m_pending_req_list.Number();
+	num = (int) m_pending_req_list.size();
 
 	return num;
 }
@@ -705,39 +731,34 @@ IOProcess::numOfPendingRequest(void)
 GahpRequest*
 IOProcess::popPendingRequest(void)
 {
-	GahpRequest *new_request = NULL;
-
-	m_pending_req_list.Rewind();
-	m_pending_req_list.Next(new_request);
-	if( new_request ) {
-		m_pending_req_list.DeleteCurrent();
+	if (m_pending_req_list.empty()) {
+		return nullptr;
 	}
-
+	GahpRequest *new_request = m_pending_req_list.front();
+	m_pending_req_list.erase(m_pending_req_list.begin());
 	return new_request;
 }
 
 GahpRequest* popRequest(Worker* worker)
 {
-	GahpRequest *new_request = NULL;
+	GahpRequest *new_request = nullptr;
 	if( !worker ) {
-		return NULL;
+		return nullptr;
 	}
 
-	worker->m_request_list.Rewind();
-	worker->m_request_list.Next(new_request);
-
-	if( new_request ) {
+	if (worker->m_request_list.empty()) {
 		// Remove this request from worker request queue
-		worker->m_request_list.DeleteCurrent();
-	}else {
 		new_request = ioprocess.popPendingRequest();
 
 		if( new_request ) {
 			new_request->m_worker = worker;
 
 			dprintf (D_FULLDEBUG, "Assigning %s to worker %d\n",
-					 new_request->m_raw_cmd.c_str(), worker->m_id);
+					new_request->m_raw_cmd.c_str(), worker->m_id);
 		}
+	} else {
+		new_request = worker->m_request_list.front();
+		worker->m_request_list.erase(worker->m_request_list.begin());
 	}
 
 	return new_request;

@@ -29,7 +29,6 @@
 #include "Version.h"
 #include "FilesOperations.h"
 #include <fstream>
-using namespace std;
 
 time_t Version::m_lastModifiedTime = -1;
 
@@ -39,7 +38,7 @@ createFile(const std::string& filePath)
 	StatWrapper statWrapper( filePath );
 	// if no state file found, create one
 	if ( statWrapper.GetRc( ) && statWrapper.GetErrno() == ENOENT) {
-		ofstream file( filePath.c_str( ) );
+		std::ofstream file( filePath.c_str( ) );
     }
 }
 
@@ -277,13 +276,13 @@ Version::load( )
 //    ifstream versionFile( m_versionFilePath.c_str( ) );
 //
 //    if( ! versionFile.is_open( ) ) {
-//        dprintf( D_FAILURE, "Version::load unable to open %s\n",
+//        dprintf( D_ERROR, "Version::load unable to open %s\n",
 //                 m_versionFilePath.c_str( ) );
 //        return false;
 //    }
     // read gid
 //    if( versionFile.eof( ) ) {
-//        dprintf( D_FAILURE, "Version::load %s format is corrupted, "
+//        dprintf( D_ERROR, "Version::load %s format is corrupted, "
 //                            "nothing appears inside it\n", 
 //				 m_versionFilePath.c_str( ) );
 //        return false;
@@ -295,7 +294,7 @@ Version::load( )
 //    dprintf( D_FULLDEBUG, "Version::load gid = %d\n", temporaryGid );
     // read version
 //    if( versionFile.eof( ) ) {
-//        dprintf( D_FAILURE, "Version::load %s format is corrupted, "
+//        dprintf( D_ERROR, "Version::load %s format is corrupted, "
 //                			"only gid appears inside it\n", 
 //				 m_versionFilePath.c_str( ) );
 //        return false;
@@ -322,16 +321,16 @@ bool
 Version::load( int& temporaryGid, int& temporaryLogicalClock ) const
 {
     char     buffer[BUFSIZ];
-    ifstream versionFile( m_versionFilePath.c_str( ) );
+	std::ifstream versionFile( m_versionFilePath.c_str( ) );
 
     if( ! versionFile.is_open( ) ) {
-        dprintf( D_FAILURE, "Version::load unable to open %s\n",
+        dprintf( D_ERROR, "Version::load unable to open %s\n",
                  m_versionFilePath.c_str( ) );
         return false;
     }
     // read gid
     if( versionFile.eof( ) ) {
-        dprintf( D_FAILURE, "Version::load %s format is corrupted, "
+        dprintf( D_ERROR, "Version::load %s format is corrupted, "
                             "nothing appears inside it\n",
                  m_versionFilePath.c_str( ) );
         return false;
@@ -343,7 +342,7 @@ Version::load( int& temporaryGid, int& temporaryLogicalClock ) const
     dprintf( D_FULLDEBUG, "Version::load gid = %d\n", temporaryGid );
     // read version
     if( versionFile.eof( ) ) {
-        dprintf( D_FAILURE, "Version::load %s format is corrupted, "
+        dprintf( D_ERROR, "Version::load %s format is corrupted, "
                             "only gid appears inside it\n",
                  m_versionFilePath.c_str( ) );
         return false;
@@ -365,9 +364,9 @@ Version::save( )
 {
     dprintf( D_ALWAYS, "Version::save started\n" );
 
-    ofstream versionFile( m_versionFilePath.c_str( ) );
+	std::ofstream versionFile( m_versionFilePath.c_str( ) );
 
-    versionFile << m_gid << endl << m_logicalClock;
+    versionFile << m_gid << std::endl << m_logicalClock;
     //versionFile.close( );
     // finding the new last modification time
 //    StatWrapper statWrapper( m_stateFilePath );

@@ -30,6 +30,7 @@
 #include "secure_file.h"
 #include "zkm_base64.h"
 #include "directory_util.h"
+#include "condor_holdcodes.h"
 
 
 extern ReliSock *syscall_sock;
@@ -45,9 +46,9 @@ static bool write_access(const char * filename ) {
 	return thisRemoteResource->allowRemoteWriteFileAccess( filename );
 }
 
-static int stat_string( char *line, struct stat *info )
+static int stat_string( char *line, size_t sz, struct stat *info )
 {
-	return sprintf(line,"%lld %lld %lld %lld %lld %lld %lld %lld %lld %lld %lld %lld %lld\n",
+	return snprintf(line,sz,"%lld %lld %lld %lld %lld %lld %lld %lld %lld %lld %lld %lld %lld\n",
 		(long long) info->st_dev,
 		(long long) info->st_ino,
 		(long long) info->st_mode,
@@ -69,12 +70,12 @@ static int stat_string( char *line, struct stat *info )
 	);
 }
 
-static int statfs_string( char *line, struct statfs *info )
+static int statfs_string( char *line, size_t sz, struct statfs *info )
 {
 #ifdef WIN32
 	return 0;
 #else
-	return sprintf(line,"%lld %lld %lld %lld %lld %lld %lld\n",
+	return snprintf(line,sz,"%lld %lld %lld %lld %lld %lld %lld\n",
 		(long long) info->f_type,
 		(long long) info->f_bsize,
 		(long long) info->f_blocks,
@@ -1377,7 +1378,7 @@ case CONDOR_getlongdir:
 				if(rval == -1) {
 					break;
 				}
-				if(stat_string(line, &stat_buf) < 0) {
+				if(stat_string(line, sizeof(line), &stat_buf) < 0) {
 					rval = -1;
 					break;
 				}
@@ -1470,7 +1471,7 @@ case CONDOR_getdir:
 			terrno = (condor_errno_t) ENOSPC;
 		}
 		else {
-			rval = sprintf(buffer, "CONDOR");
+			rval = snprintf(buffer, length, "CONDOR");
 			terrno = (condor_errno_t) errno;
 		}
 		dprintf( D_SYSCALLS, "\trval = %d, errno = %d\n", rval, terrno );
@@ -1514,7 +1515,7 @@ case CONDOR_getdir:
 			terrno = (condor_errno_t) ENOSPC;
 		}
 		else {
-			rval = sprintf(buffer, "UNKNOWN");
+			rval = snprintf(buffer, length, "UNKNOWN");
 			terrno = (condor_errno_t) errno;
 		}
 		dprintf( D_SYSCALLS, "\trval = %d, errno = %d\n", rval, terrno );
@@ -1553,7 +1554,7 @@ case CONDOR_getdir:
 		char line[1024];
 		memset( line, 0, sizeof(line) );
 		if(rval == 0) {
-			if(statfs_string(line, &statfs_buf) < 0) {
+			if(statfs_string(line, sizeof(line), &statfs_buf) < 0) {
 				rval = -1;
 				terrno = (condor_errno_t)errno;
 			}
@@ -1775,7 +1776,7 @@ case CONDOR_getdir:
 		char line[1024];
 		memset( line, 0, sizeof(line) );
 		if(rval == 0) {
-			if(stat_string(line, &stat_buf) < 0) {
+			if(stat_string(line, sizeof(line), &stat_buf) < 0) {
 				rval = -1;
 				terrno = (condor_errno_t)errno;
 			}
@@ -1813,7 +1814,7 @@ case CONDOR_getdir:
 		char line[1024];
 		memset( line, 0, sizeof(line) );
 		if(rval == 0) {
-			if(statfs_string(line, &statfs_buf) < 0) {
+			if(statfs_string(line, sizeof(line), &statfs_buf) < 0) {
 				rval = -1;
 				terrno = (condor_errno_t)errno;
 			}
@@ -1951,7 +1952,7 @@ case CONDOR_getdir:
 		char line[1024];
 		memset( line, 0, sizeof(line) );
 		if(rval == 0) {
-			if(stat_string(line, &stat_buf) < 0) {
+			if(stat_string(line, sizeof(line), &stat_buf) < 0) {
 				rval = -1;
 				terrno = (condor_errno_t)errno;
 			}
@@ -1988,7 +1989,7 @@ case CONDOR_getdir:
 		char line[1024];
 		memset( line, 0, sizeof(line) );
 		if(rval == 0) {
-			if(stat_string(line, &stat_buf) < 0) {
+			if(stat_string(line, sizeof(line), &stat_buf) < 0) {
 				rval = -1;
 				terrno = (condor_errno_t)errno;
 			}
@@ -2156,10 +2157,32 @@ case CONDOR_getdir:
 		auto_free_ptr cred_dir(param("SEC_CREDENTIAL_DIRECTORY_OAUTH"));
 		if (!cred_dir) {
 			dprintf(D_ALWAYS, "ERROR: CONDOR_getcreds doesn't have SEC_CREDENTIAL_DIRECTORY_OAUTH defined.\n");
+			result = ( syscall_sock->put(-1) );
+			ASSERT( result );
+			result = ( syscall_sock->end_of_message() );
+			ASSERT( result );
+			Shadow->holdJob("Job credentials are not available", CONDOR_HOLD_CODE::CorruptedCredential, 0);
 			return -1;
 		}
 		std::string cred_dir_name;
 		dircat(cred_dir, user.c_str(), cred_dir_name);
+
+		// CRUFT Older starters expect the service name to be the
+		// filename that should be written. Depending on the version,
+		// this may include appending '.use' and replacing '*' with '_'.
+		bool service_add_use = true;
+		bool service_sub_star = true;
+		const ClassAd* starter_ad = thisRemoteResource->getStarterAd();
+		std::string starter_ver;
+		if (starter_ad && starter_ad->LookupString(ATTR_VERSION, starter_ver)) {
+			CondorVersionInfo cvi(starter_ver.c_str());
+			if (cvi.built_since_version(10, 5, 0)) {
+				service_sub_star = false;
+			}
+			if (cvi.built_since_version(10, 8, 0)) {
+				service_add_use = false;
+			}
+		}
 
 		// what we want to do is send only the ".use" creds, and only
 		// the ones required for this job.  we will need to get that
@@ -2173,6 +2196,15 @@ case CONDOR_getdir:
 		services_list.rewind();
 		char *curr;
 		while((curr = services_list.next())) {
+			std::string service_name = curr;
+
+			if (service_add_use) {
+				service_name += ".use";
+			}
+			if (service_sub_star) {
+				replace_str(service_name, "*", "_");
+			}
+
 			std::string fname,fullname;
 			formatstr(fname, "%s.use", curr);
 
@@ -2200,7 +2232,7 @@ case CONDOR_getdir:
 			free(buf);
 
 			ClassAd ad;
-			ad.Assign("Service", fname);
+			ad.Assign("Service", service_name);
 			ad.Assign("Data", b64);
 
 			int more_ads = 1;
@@ -2208,12 +2240,15 @@ case CONDOR_getdir:
 			ASSERT( result );
 			result = ( putClassAd(syscall_sock, ad) );
 			ASSERT( result );
-			dprintf( D_SECURITY|D_FULLDEBUG, "CONDOR_getcreds: sent ad:\n" );
-			dPrintAd(D_SECURITY|D_FULLDEBUG, ad);
+			if (param_boolean("SEC_DEBUG_PRINT_KEYS", false)) {
+				dprintf( D_SECURITY|D_FULLDEBUG, "CONDOR_getcreds: sent ad:\n" );
+				dPrintAd(D_SECURITY|D_FULLDEBUG, ad);
+			}
 		}
 
 		int last_command = 0;
 		if (had_error) {
+			Shadow->holdJob("Job credentials are not available", CONDOR_HOLD_CODE::CorruptedCredential, 0);
 			last_command = -1;
 		}
 

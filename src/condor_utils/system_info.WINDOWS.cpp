@@ -41,6 +41,7 @@
 #include "condor_debug.h"
 #include <process.h>
 #include "system_info.WINDOWS.h"
+#include "stl_string_utils.h"
 
 /*
 #ifndef WINNT
@@ -64,8 +65,8 @@ typedef struct _BASIC_THREAD_INFORMATION {
 //
 //////////////////////////////////////////////////////////////////////////////////////
 
-// From wide char string to MyString
-void SystemInfoUtils::LPCWSTR2MyString( LPCWSTR strW, MyString& str )
+// From wide char string to std::string
+void SystemInfoUtils::LPCWSTR2String( LPCWSTR strW, std::string& str )
 {
 #ifdef UNICODE
 	// if it is already UNICODE, no problem
@@ -75,7 +76,7 @@ void SystemInfoUtils::LPCWSTR2MyString( LPCWSTR strW, MyString& str )
 
 	TCHAR* actChar = (TCHAR*)strW;
 
-	if ( actChar == '\0' )
+	if ( actChar == nullptr)
 		return;
 
 	size_t len = wcslen(strW) + 1;
@@ -95,16 +96,16 @@ void SystemInfoUtils::LPCWSTR2MyString( LPCWSTR strW, MyString& str )
 }
 
 // From wide char string to unicode
-void SystemInfoUtils::Unicode2MyString( UNICODE_STRING* strU, MyString& str )
+void SystemInfoUtils::Unicode2String( UNICODE_STRING* strU, std::string& str )
 {
 	if ( *(DWORD*)strU != 0 )
-		LPCWSTR2MyString( (LPCWSTR)strU->Buffer, str );
+		LPCWSTR2String( (LPCWSTR)strU->Buffer, str );
 	else
 		str = "";
 }
 
 // From device file name to DOS filename
-BOOL SystemInfoUtils::GetFsFileName( LPCTSTR lpDeviceFileName, MyString& fsFileName )
+BOOL SystemInfoUtils::GetFsFileName( LPCTSTR lpDeviceFileName, std::string& fsFileName )
 {
 	BOOL rc = FALSE;
 
@@ -157,7 +158,7 @@ BOOL SystemInfoUtils::GetFsFileName( LPCTSTR lpDeviceFileName, MyString& fsFileN
 }
 
 // From DOS file name to device file name
-BOOL SystemInfoUtils::GetDeviceFileName( LPCTSTR lpFsFileName, MyString& deviceFileName )
+BOOL SystemInfoUtils::GetDeviceFileName( LPCTSTR lpFsFileName, std::string& deviceFileName )
 {
 	BOOL rc = FALSE;
 	TCHAR lpDrive[3];
@@ -311,7 +312,6 @@ size_t hashFunction ( const DWORD &key ) {
 }
 
 SystemProcessInformation::SystemProcessInformation( BOOL bRefresh ) 
-: m_ProcessInfos (hashFunction)
 {
 	m_pBuffer = (UCHAR*)VirtualAlloc (NULL,
 						BufferSize, 
@@ -324,9 +324,8 @@ SystemProcessInformation::SystemProcessInformation( BOOL bRefresh )
 
 SystemProcessInformation::~SystemProcessInformation()
 {
-	SYSTEM_PROCESS_INFORMATION* ptmp; 
-	m_ProcessInfos.startIterations ();
-	while ( m_ProcessInfos.iterate ( ptmp ) ) {
+	SYSTEM_PROCESS_INFORMATION* ptmp;
+	for (auto [key, ptmp]: m_ProcessInfos) {
 		VirtualFree ( ptmp, 0, MEM_RELEASE );
 	}
 	VirtualFree( m_pBuffer, 0, MEM_RELEASE );
@@ -334,10 +333,7 @@ SystemProcessInformation::~SystemProcessInformation()
 
 BOOL SystemProcessInformation::Refresh()
 {
-	//m_ProcessInfos.RemoveAll();
-	SYSTEM_PROCESS_INFORMATION* ptmp; 
-	m_ProcessInfos.startIterations ();
-	while ( m_ProcessInfos.iterate ( ptmp ) ) {
+	for (auto [key, ptmp]: m_ProcessInfos) {
 		VirtualFree ( ptmp, 0, MEM_RELEASE );
 	}
 	m_ProcessInfos.clear ();
@@ -367,8 +363,7 @@ BOOL SystemProcessInformation::Refresh()
 		memcpy ( pNewSysProcess, pSysProcess, blockSize );		
 				
 		// fill the process information map
-		//m_ProcessInfos.SetAt( pSysProcess->dUniqueProcessId, pSysProcess );
-		m_ProcessInfos.insert ( pNewSysProcess->dUniqueProcessId, pNewSysProcess );
+		m_ProcessInfos.insert ( {pNewSysProcess->dUniqueProcessId, pNewSysProcess} );
 
 		/*
 		dprintf ( D_FULLDEBUG, "process map: %d -> 0x%x\n", 
@@ -421,7 +416,7 @@ BOOL SystemHandleInformation::SetFilter( LPCTSTR lpTypeFilter, BOOL bRefresh )
 	return bRefresh ? Refresh() : TRUE;
 }
 
-const MyString& SystemHandleInformation::GetFilter()
+const std::string& SystemHandleInformation::GetFilter()
 {
 	return m_strTypeFilter;
 }
@@ -447,7 +442,7 @@ BOOL SystemHandleInformation::Refresh()
 	DWORD needed = 0;
 	DWORD i = 0;
 	BOOL  ret = TRUE;
-	MyString strType;
+	std::string strType;
 
 	// m_HandleInfos.RemoveAll();
 	while ( !m_HandleInfos.IsEmpty () ) {
@@ -551,7 +546,7 @@ HANDLE SystemHandleInformation::DuplicateHandle( HANDLE hProcess, HANDLE hRemote
 }
 
 //Information functions
-BOOL SystemHandleInformation::GetTypeToken( HANDLE h, MyString& str, DWORD processId )
+BOOL SystemHandleInformation::GetTypeToken( HANDLE h, std::string& str, DWORD processId )
 {
 	ULONG size = 0x2000;
 	UCHAR* lpBuffer = NULL;
@@ -587,7 +582,7 @@ BOOL SystemHandleInformation::GetTypeToken( HANDLE h, MyString& str, DWORD proce
 	if ( INtDll::NtQueryObject( handle, 2, lpBuffer, size, NULL ) == 0 )
 	{
 		str = "";
-		SystemInfoUtils::LPCWSTR2MyString( (LPCWSTR)(lpBuffer+0x60), str );
+		SystemInfoUtils::LPCWSTR2String( (LPCWSTR)(lpBuffer+0x60), str );
 
 		ret = TRUE;
 	}
@@ -609,20 +604,20 @@ BOOL SystemHandleInformation::GetTypeToken( HANDLE h, MyString& str, DWORD proce
 
 BOOL SystemHandleInformation::GetType( HANDLE h, WORD& type, DWORD processId )
 {
-	MyString strType;
+	std::string strType;
 
 	type = OB_TYPE_UNKNOWN;
 
 	if ( !GetTypeToken( h, strType, processId ) )
 		return FALSE;
 
-	return GetTypeFromTypeToken( strType.Value (), type );
+	return GetTypeFromTypeToken( strType.c_str (), type );
 }
 
 BOOL SystemHandleInformation::GetTypeFromTypeToken( LPCTSTR typeToken, WORD& type )
 {
 	const WORD count = 27;
-	MyString constStrTypes[count] = { 
+	std::string constStrTypes[count] = { 
 		"", "", "Directory", "SymbolicLink", "Token",
 		"Process", "Thread", "Unknown7", "Event", "EventPair", "Mutant", 
 		"Unknown11", "Semaphore", "Timer", "Profile", "WindowStation",
@@ -642,7 +637,7 @@ BOOL SystemHandleInformation::GetTypeFromTypeToken( LPCTSTR typeToken, WORD& typ
 	return FALSE;
 }
 
-BOOL SystemHandleInformation::GetName( HANDLE handle, MyString& str, DWORD processId )
+BOOL SystemHandleInformation::GetName( HANDLE handle, std::string& str, DWORD processId )
 {
 	WORD type = 0;
 
@@ -652,7 +647,7 @@ BOOL SystemHandleInformation::GetName( HANDLE handle, MyString& str, DWORD proce
 	return GetNameByType( handle, type, str, processId );
 }
 
-BOOL SystemHandleInformation::GetNameByType( HANDLE h, WORD type, MyString& str, DWORD processId )
+BOOL SystemHandleInformation::GetNameByType( HANDLE h, WORD type, std::string& str, DWORD processId )
 {
 	ULONG size = 0x2000;
 	UCHAR* lpBuffer = NULL;
@@ -685,7 +680,7 @@ BOOL SystemHandleInformation::GetNameByType( HANDLE h, WORD type, MyString& str,
 		GetProcessId( handle, dwId );
 		
 		//str.Format( "PID: 0x%X", dwId );
-		str.formatstr( "PID: 0x%X", dwId );
+		formatstr( str, "PID: 0x%X", dwId );
 			
 		ret = TRUE;
 		goto cleanup;
@@ -694,7 +689,7 @@ BOOL SystemHandleInformation::GetNameByType( HANDLE h, WORD type, MyString& str,
 	case OB_TYPE_THREAD:
 		GetThreadId( handle, dwId );
 
-		str.formatstr( "TID: 0x%X" , dwId );
+		formatstr( str, "TID: 0x%X" , dwId );
 				
 		ret = TRUE;
 		goto cleanup;
@@ -720,7 +715,7 @@ BOOL SystemHandleInformation::GetNameByType( HANDLE h, WORD type, MyString& str,
 
 	if ( INtDll::NtQueryObject( handle, 1, lpBuffer, size, NULL ) == 0 )
 	{
-		SystemInfoUtils::Unicode2MyString( (UNICODE_STRING*)lpBuffer, str );
+		SystemInfoUtils::Unicode2String( (UNICODE_STRING*)lpBuffer, str );
 		ret = TRUE;
 	}
 	
@@ -783,11 +778,11 @@ BOOL SystemHandleInformation::GetThreadId( HANDLE h, DWORD& threadID, DWORD proc
 }
 
 //Process related functions
-BOOL SystemHandleInformation::GetProcessPath( HANDLE h, MyString& strPath, DWORD remoteProcessId )
+BOOL SystemHandleInformation::GetProcessPath( HANDLE h, std::string& strPath, DWORD remoteProcessId )
 {
 	h; strPath; remoteProcessId;
 
-	strPath.formatstr( "%d", remoteProcessId );
+	formatstr( strPath, "%d", remoteProcessId );
 
 	return TRUE;
 }
@@ -856,7 +851,7 @@ void SystemHandleInformation::GetFileNameThread( PVOID pParam )
 		*p->pName = (PCHAR) lpBuffer;
 }
 
-BOOL SystemHandleInformation::GetFileName( HANDLE h, MyString& str, DWORD processId )
+BOOL SystemHandleInformation::GetFileName( HANDLE h, std::string& str, DWORD processId )
 {
 	BOOL ret= FALSE;
 	HANDLE hThread = NULL;

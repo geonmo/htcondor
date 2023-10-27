@@ -37,7 +37,6 @@ GetOptions(
             'clear-externals-cache-daily' => \$opt_clear_externals_cache_daily,
 );
 
-my $installcmakecmd = "./nmi_tools/glue/build/install_cmake";
 my $cmake = undef;
 my $BaseDir = getcwd();
 #my $SrcDir = "$BaseDir/src";
@@ -48,7 +47,6 @@ my $platform = "$ENV{NMI_PLATFORM}";
 my %defines = (
     listvars => "-LA",
     #noregen => "-DCMAKE_SUPPRESS_REGENERATION:BOOL=TRUE",
-    prefix => "-DCMAKE_INSTALL_PREFIX:PATH=$BaseDir/release_dir",
     mirror => "-DEXTERNALS_SOURCE_URL:URL=https://parrot.cs.wisc.edu/externals",
     #mirror => "-DEXTERNALS_SOURCE_URL:URL=http://mirror.batlab.org/pub/export/externals",
     );
@@ -144,22 +142,17 @@ print "Configure args: " . join(' ', @ARGV) . "\n";
 # absolute path to cmake.
 ######################################################################
 
-# See gt 2344 for this block of code
 if ($ENV{NMI_PLATFORM} =~ /_win/i) {
-	# Terrible hack for now. The real solution is $installcmakecmd should
-	# be a batch file which forms the same work as the unix side. And then
-	# only the else case in this 'if' gets run. This if would then appear
-	# in the definition of $installcmakecmd to point to the correct
-	# thing.
 	$cmake = "cmake";
 } else {
-	$cmake = `$installcmakecmd ${CONDOR_SCRATCH_DIR} 2>&1 | sed -n \\\$p`;
-	if ($? != 0 || !defined($cmake) || $cmake =~ m/^FAILURE:/) {
-		die "Cannot find a usable cmake install.";
+	$cmake = `which cmake3 2>&1`;
+	if ($? != 0) {
+		$cmake = `which cmake 2>&1`;
+		if ($? != 0) {
+			die "Cannot find a usable cmake install.";
+		}
 	}
 	chomp $cmake;
-	# Get just the real path from the output of the above script.
-	$cmake =~ s/SUCCESS: //g;
 }
 
 print "Using cmake: $cmake\n";
@@ -202,7 +195,6 @@ if ($ENV{NMI_PLATFORM} =~ /_win/i) {
 print "Finding build id of Condor\n";
 open( BUILDID, "$buildid_file" ) || die "Can't open $buildid_file: $!\n";
 my @stat = stat(BUILDID);
-$date = strftime( "%Y-%b-%d", localtime($stat[9]) );
 while( <BUILDID> ) {
     chomp;
     $buildid = $_;
@@ -213,7 +205,6 @@ if( ! $buildid ) {
 }
 print "Build id is: $buildid\n";
 $defines{buildid} = "-DBUILDID:STRING=$buildid";
-$defines{date} = "-DBUILD_DATE:STRING=\"$date\"";
 
 print "platform is: $platform\n";
 $defines{platform} = "-DPLATFORM:STRING=$platform";

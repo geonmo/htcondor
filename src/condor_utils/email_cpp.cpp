@@ -40,14 +40,14 @@ static FILE* email_user_open_id( ClassAd *jobAd, int cluster, int proc,
 								 const char *subject );
 
 static void
-construct_custom_attributes( MyString &attributes, ClassAd* job_ad );
+construct_custom_attributes(std::string &attributes, ClassAd* job_ad);
 
 FILE *
 email_user_open_id( ClassAd *jobAd, int, int, const char *subject )
 {
 	FILE* fp = NULL;
-    char* email_addr = NULL;
-    char* email_full_addr = NULL;
+	std::string email_addr;
+	std::string email_full_addr;
 
 	ASSERT(jobAd);
 
@@ -55,20 +55,18 @@ email_user_open_id( ClassAd *jobAd, int, int, const char *subject )
 	  Job may have an email address to whom the notification
 	  message should go.  This info is in the classad.
     */
-    if( ! jobAd->LookupString(ATTR_NOTIFY_USER, &email_addr) ) {
+    if( ! jobAd->LookupString(ATTR_NOTIFY_USER, email_addr) ) {
 			// no email address specified in the job ad; try owner
-		if( ! jobAd->LookupString(ATTR_OWNER, &email_addr) ) {
+		if( ! jobAd->LookupString(ATTR_OWNER, email_addr) ) {
 				// we're screwed, give up.
 			return NULL;
 		}
 	}
 		// make sure we've got a valid address with a domain
-	email_full_addr = email_check_domain( email_addr, jobAd );
+	email_full_addr = email_check_domain( email_addr.c_str(), jobAd );
 	// This is the only place email_nonjob_open() should be called for
 	// a job-related email.
-	fp = email_nonjob_open( email_full_addr, subject );
-	free( email_addr );
-	free( email_full_addr );
+	fp = email_nonjob_open( email_full_addr.c_str(), subject );
 	return fp;
 }
 
@@ -78,7 +76,7 @@ email_custom_attributes( FILE* mailer, ClassAd* job_ad )
 	if( !mailer || !job_ad ) {
 		return;
 	}
-    MyString attributes;
+	std::string attributes;
 
     construct_custom_attributes( attributes, job_ad );
     fprintf( mailer, "%s", attributes.c_str( ) );
@@ -86,36 +84,35 @@ email_custom_attributes( FILE* mailer, ClassAd* job_ad )
 }
 
 static void
-construct_custom_attributes( MyString &attributes, ClassAd* job_ad )
+construct_custom_attributes( std::string &attributes, ClassAd* job_ad )
 {
-    attributes = "";
+    attributes.clear();
 
 	bool first_time = true;
-	char *tmp = NULL;
-	job_ad->LookupString( ATTR_EMAIL_ATTRIBUTES, &tmp );
-	if( ! tmp ) {
+	std::string tmp;
+	job_ad->LookupString( ATTR_EMAIL_ATTRIBUTES, tmp );
+	if( tmp.empty() ) {
 		return;
 	}
 
 	StringList email_attrs;
-	email_attrs.initializeFromString( tmp );
-	free( tmp );
-	tmp = NULL;
+	email_attrs.initializeFromString( tmp.c_str() );
+	tmp.clear();
 		
 	ExprTree* expr_tree;
 	email_attrs.rewind();
-	while( (tmp = email_attrs.next()) ) {
-		expr_tree = job_ad->LookupExpr(tmp);
+	char *p = nullptr;
+	while( (p = email_attrs.next()) ) {
+		expr_tree = job_ad->LookupExpr(p);
 		if( ! expr_tree ) {
-            dprintf(D_ALWAYS, "Custom email attribute (%s) is undefined.",
-                    tmp);
+            dprintf(D_ALWAYS, "Custom email attribute (%s) is undefined.", p);
 			continue;
 		}
 		if( first_time ) {
-			attributes.formatstr_cat( "\n\n" );
+			formatstr_cat(attributes, "\n\n");
 			first_time = false;
 		}
-		attributes.formatstr_cat( "%s = %s\n", tmp, ExprTreeToString(expr_tree) );
+		formatstr_cat(attributes, "%s = %s\n", p, ExprTreeToString(expr_tree));
 	}
     return;
 }
@@ -124,9 +121,9 @@ construct_custom_attributes( MyString &attributes, ClassAd* job_ad )
 char*
 email_check_domain( const char* addr, ClassAd* job_ad )
 {
-	MyString full_addr = addr;
+	std::string full_addr = addr;
 
-	if( full_addr.FindChar('@') >= 0 ) {
+	if( full_addr.find('@') != std::string::npos ) {
 			// Already has a domain, we're done
 		return strdup( addr );
 	}
@@ -272,8 +269,8 @@ Email::open_stream( ClassAd* ad, int exit_reason, const char* subject )
 	ad->LookupInteger( ATTR_CLUSTER_ID, cluster );
 	ad->LookupInteger( ATTR_PROC_ID, proc );
 
-	MyString full_subject;
-	full_subject.formatstr( "Condor Job %d.%d", cluster, proc );
+	std::string full_subject;
+	formatstr(full_subject, "Condor Job %d.%d", cluster, proc);
 	if( subject ) {
 		full_subject += " ";
 		full_subject += subject;
@@ -295,8 +292,9 @@ Email::writeJobId( ClassAd* ad )
 	if( ! fp ) {
 		return false;
 	}
-	char* cmd = NULL;
-	ad->LookupString( ATTR_JOB_CMD, &cmd );
+	
+	std::string cmd;	
+	ad->LookupString( ATTR_JOB_CMD, cmd );
 
 	std::string batch_name;
 	ad->LookupString(ATTR_JOB_BATCH_NAME, batch_name);
@@ -304,15 +302,14 @@ Email::writeJobId( ClassAd* ad )
 	std::string iwd;
 	ad->LookupString(ATTR_JOB_IWD, iwd);
 
-	MyString args;
-	ArgList::GetArgsStringForDisplay(ad,&args);
+	std::string args;
+	ArgList::GetArgsStringForDisplay(ad, args);
 
 	fprintf( fp, "Condor job %d.%d\n", cluster, proc);
 
-	if( cmd ) {
-		fprintf( fp, "\t%s", cmd );
-		free( cmd );
-		cmd = NULL;
+	if( !cmd.empty() ) {
+		fprintf( fp, "\t%s", cmd.c_str());
+		cmd.clear();
 		if( !args.empty() ) {
 			fprintf( fp, " %s\n", args.c_str() );
 		} else {
@@ -460,7 +457,7 @@ Email::writeCustom( ClassAd *ad )
 		return;
 	}
 
-    MyString attributes;
+	std::string attributes;
 
     construct_custom_attributes( attributes, ad );
     fprintf( fp, "%s", attributes.c_str() );
@@ -518,7 +515,7 @@ Email::shouldSend( ClassAd* ad, int exit_reason, bool is_error )
 	int exitCode = 0, successExitCode = 0;
 
 	// send email if user requested it
-	int notification = NOTIFY_COMPLETE;	// default
+	int notification = NOTIFY_NEVER;	// default
 	ad->LookupInteger( ATTR_JOB_NOTIFICATION, notification );
 
 	switch( notification ) {

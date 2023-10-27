@@ -38,6 +38,8 @@
 #include "singularity.h"
 #include "has_sysadmin_cap.h"
 #include "starter_util.h"
+#include "proc_family_direct_cgroup_v2.h"
+#include <array>
 
 #include <sstream>
 
@@ -113,14 +115,14 @@ time_t StarterStatistics::Tick(time_t now) {
 
 void StarterStatistics::Publish(ClassAd& ad, int flags) const {
     if ((flags & IF_PUBLEVEL) > 0) {
-        ad.Assign("StatsLifetime", (int)StatsLifetime);
+        ad.Assign("StatsLifetime", StatsLifetime);
         if (flags & IF_VERBOSEPUB)
-            ad.Assign("StatsLastUpdateTime", (int)StatsLastUpdateTime);
+            ad.Assign("StatsLastUpdateTime", StatsLastUpdateTime);
         if (flags & IF_RECENTPUB) {
-            ad.Assign("RecentStatsLifetime", (int)RecentStatsLifetime);
+            ad.Assign("RecentStatsLifetime", RecentStatsLifetime);
             if (flags & IF_VERBOSEPUB) {
-                ad.Assign("RecentWindowMax", (int)RecentWindowMax);
-                ad.Assign("RecentStatsTickTime", (int)RecentStatsTickTime);
+                ad.Assign("RecentWindowMax", RecentWindowMax);
+                ad.Assign("RecentStatsTickTime", RecentStatsTickTime);
             }
         }
     }
@@ -140,9 +142,6 @@ void StarterStatistics::Publish(ClassAd& ad, int flags) const {
 
 VanillaProc::VanillaProc(ClassAd* jobAd) : OsProc(jobAd),
 	m_memory_limit(-1),
-	m_oom_fd(-1),
-	m_oom_efd(-1),
-	m_oom_efd2(-1),
 	isCheckpointing(false),
 	isSoftKilling(false)
 {
@@ -152,129 +151,92 @@ VanillaProc::VanillaProc(ClassAd* jobAd) : OsProc(jobAd),
 #endif
 }
 
-VanillaProc::~VanillaProc()
-{
-	cleanupOOM();
+VanillaProc::~VanillaProc() {}
+
+#ifdef LINUX
+static bool cgroup_controller_is_writeable(const std::string &controller, std::string relative_cgroup) {
+
+	if (relative_cgroup.length() == 0) {
+		return false;
+	}
+
+	// Assume cgroup mounted on /sys/fs/cgroup
+	std::string cgroup_mount_point = "/sys/fs/cgroup/";
+
+	// In Cgroup v1, need to test each controller separately
+	// For cgroup v2, controller will be empty string, but that's OK.
+	std::string test_path = cgroup_mount_point;
+
+	if (!controller.empty()) {
+		// cgroup v1 with controller at root
+		test_path += controller + '/';
+	} 
+
+	// Regardless of v1 or v2, the relative cgroup at the end
+	test_path += relative_cgroup;
+
+	// The relative path given might not completly exist.  We can write
+	// to it if we can write to the fully given path (the usual case)
+	// OR, if we have write power to the parent of the top-most non-existing
+	// directory.
+
+	{
+		TemporaryPrivSentry sentry(PRIV_ROOT); // Test with all our powers
+
+		if (access(test_path.c_str(), R_OK | W_OK) == 0) {
+			dprintf(D_ALWAYS, "    Cgroup %s/%s is useable\n", controller.c_str(), relative_cgroup.c_str());
+			return true;
+		}
+	}
+
+	// The directory doesn't exist.  See if we can write to the parent.
+	if ((errno == ENOENT) && (relative_cgroup.length() > 1))  {
+		size_t trailing_slash = relative_cgroup.find_last_of('/');
+		if (trailing_slash == std::string::npos) {
+			relative_cgroup = '/'; // last try from the root of the mount point
+		} else {
+			relative_cgroup.resize(trailing_slash); // Retry one directory up
+		}
+		return cgroup_controller_is_writeable(controller, relative_cgroup);
+
+	}
+	
+	dprintf(D_ALWAYS, "    Cgroup %s/%s is not writeable, cannot use cgroups\n", controller.c_str(), relative_cgroup.c_str());
+	return false;
 }
+
+static bool cgroup_v1_is_writeable(const std::string &relative_cgroup) {
+	return 
+		// These should be synchronized to the required_controllers in the procd
+		cgroup_controller_is_writeable("memory", relative_cgroup)     &&
+		cgroup_controller_is_writeable("cpu,cpuacct", relative_cgroup) &&
+		cgroup_controller_is_writeable("freezer", relative_cgroup);
+}
+
+static bool cgroup_v2_is_writeable(const std::string &relative_cgroup) {
+	return can_switch_ids() && cgroup_controller_is_writeable("", relative_cgroup);
+}
+
+static bool cgroup_is_writeable(const std::string &relative_cgroup) {
+	dprintf(D_ALWAYS, "Checking to see if %s is a writeable cgroup\n", relative_cgroup.c_str());
+
+	struct stat statbuf;
+
+	// Should be readable by everyone
+	if (stat("/sys/fs/cgroup/cgroup.procs", &statbuf) == 0) {
+		// This means we're on cgroups v2
+		return cgroup_v2_is_writeable(relative_cgroup);
+	} else {
+		// V1.
+		return cgroup_v1_is_writeable(relative_cgroup);
+	}
+}
+#endif
 
 int
 VanillaProc::StartJob()
 {
 	dprintf(D_FULLDEBUG,"in VanillaProc::StartJob()\n");
-
-	// vanilla jobs, unlike standard jobs, are allowed to run 
-	// shell scripts (or as is the case on NT, batch files).  so
-	// edit the ad so we start up a shell, pass the executable as
-	// an argument to the shell, if we are asked to run a .bat file.
-#ifdef WIN32
-
-	CHAR		interpreter[MAX_PATH+1],
-				systemshell[MAX_PATH+1];    
-	const char* jobtmp				= Starter->jic->origJobName();
-	size_t		joblen				= strlen(jobtmp);
-	const char	*extension			= joblen > 0 ? &(jobtmp[joblen-4]) : NULL;
-	bool		binary_executable	= ( extension && 
-										( MATCH == strcasecmp ( ".exe", extension ) || 
-										  MATCH == strcasecmp ( ".com", extension ) ) ),
-				java_universe		= ( CONDOR_UNIVERSE_JAVA == job_universe );
-	ArgList		arguments;
-	std::string	filename;
-	std::string	jobname;
-	std::string error;
-	
-	if ( extension && !java_universe && !binary_executable ) {
-
-		/** since we do not actually know how long the extension of
-			the file is, we'll need to hunt down the '.' in the path,
-			if it exists */
-		extension = strrchr ( jobtmp, '.' );
-
-		if ( !extension ) {
-
-			dprintf ( 
-				D_ALWAYS, 
-				"VanillaProc::StartJob(): Failed to extract "
-				"the file's extension.\n" );
-
-			/** don't fail here, since we want executables to run
-				as usual.  That is, some condor jobs submit 
-				executables that do not have the '.exe' extension,
-				but are, nonetheless, executable binaries.  For
-				instance, a submit script may contain:
-
-				executable = executable$(OPSYS) */
-
-		} else {
-
-			/** pull out the path to the executable */
-			if ( !JobAd->LookupString ( 
-				ATTR_JOB_CMD, 
-				jobname ) ) {
-				
-				/** fall back on Starter->jic->origJobName() */
-				jobname = jobtmp;
-
-			}
-
-			/** If we transferred the job, it may have been
-				renamed to condor_exec.exe even though it is
-				not an executable. Here we rename it back to
-				a the correct extension before it will run. */
-			if ( MATCH == strcasecmp ( 
-					CONDOR_EXEC, 
-					condor_basename ( jobname.c_str () ) ) ) {
-				formatstr ( filename, "condor_exec%s", extension );
-				if (rename(CONDOR_EXEC, filename.c_str()) != 0) {
-					dprintf (D_ALWAYS, "VanillaProc::StartJob(): ERROR: "
-							"failed to rename executable from %s to %s\n", 
-							CONDOR_EXEC, filename.c_str() );
-				}
-			} else {
-				filename = jobname;
-			}
-			
-			/** Since we've renamed our executable, we need to
-				update the job ad to reflect this change. */
-			if ( !JobAd->Assign ( 
-				ATTR_JOB_CMD, 
-				filename ) ) {
-
-				dprintf (
-					D_ALWAYS,
-					"VanillaProc::StartJob(): ERROR: failed to "
-					"set new executable name.\n" );
-
-				return FALSE;
-
-			}
-
-			/** We've moved the script to argv[1], so we need to 
-				add	the remaining arguments to positions argv[2]..
-				argv[/n/]. */
-			if ( !arguments.AppendArgsFromClassAd ( JobAd, error ) ||
-				 !arguments.InsertArgsIntoClassAd ( JobAd, NULL, error ) ) {
-
-				dprintf (
-					D_ALWAYS,
-					"VanillaProc::StartJob(): ERROR: failed to "
-					"get arguments from job ad: %s\n",
-					error.c_str () );
-
-				return FALSE;
-
-			}
-
-			/** Since we know already we don't want this file returned
-				to us, we explicitly add it to an exception list which
-				will stop the file transfer mechanism from considering
-				it for transfer back to its submitter */
-			Starter->jic->removeFromOutputFiles (
-				filename.c_str () );
-
-		}
-			
-	}
-#endif
 
 	// set up a FamilyInfo structure to tell OsProc to register a family
 	// with the ProcD in its call to DaemonCore::Create_Process
@@ -304,7 +266,7 @@ VanillaProc::StartJob()
 		        fi.login);
 	}
 
-	FilesystemRemap * fs_remap = NULL;
+	std::unique_ptr<FilesystemRemap> fs_remap;
 #if defined(LINUX)
 	// on Linux, we also have the ability to track processes via
 	// a phony supplementary group ID
@@ -327,7 +289,8 @@ VanillaProc::StartJob()
 	setupOOMScore(4,800);
 #endif
 
-#if defined(HAVE_EXT_LIBCGROUP)
+#ifdef LINUX
+	// This works for both v1 and v2 cgroups
 	// Determine the cgroup
 	std::string cgroup_base;
 	param(cgroup_base, "BASE_CGROUP", "");
@@ -349,18 +312,15 @@ VanillaProc::StartJob()
 		 *  local universe and cgroups can be properly worked
 		 *  out. -matt 7 nov '12
 		 */
-	if (CONDOR_UNIVERSE_LOCAL != job_universe && cgroup_base.length() && can_switch_ids() && has_sysadmin_cap()) {
+	if (CONDOR_UNIVERSE_LOCAL != job_universe && cgroup_is_writeable(cgroup_base)) {
 		std::string cgroup_uniq;
 		std::string starter_name, execute_str;
 		param(execute_str, "EXECUTE", "EXECUTE_UNKNOWN");
 			// Note: Starter is a global variable from os_proc.cpp
 		Starter->jic->machClassAd()->LookupString(ATTR_NAME, starter_name);
 		if (starter_name.size() == 0) {
-			char buf[16];
-			sprintf(buf, "%d", getpid());
-			starter_name = buf;
+			starter_name = std::to_string(getpid());
 		}
-		//ASSERT (starter_name.size());
 		formatstr(cgroup_uniq, "%s_%s", execute_str.c_str(), starter_name.c_str());
 		const char dir_delim[2] = {DIR_DELIM_CHAR, '\0'};
 		replace_str(cgroup_uniq, dir_delim, "_");
@@ -371,7 +331,30 @@ VanillaProc::StartJob()
 		cgroup = cgroup_str.c_str();
 		ASSERT (cgroup != NULL);
 		fi.cgroup = cgroup;
-		dprintf(D_FULLDEBUG, "Requesting cgroup %s for job.\n", cgroup);
+
+		int numCores = 1;
+		if (!Starter->jic->machClassAd()->LookupInteger(ATTR_CPUS, numCores)) {
+			dprintf(D_ALWAYS, "Invalid value of Cpus in machine ClassAd; assuming 1 for cgroup limit purposes.\n");
+		}
+		fi.cgroup_cpu_shares = 100 * numCores;
+
+		int64_t memory = 0;
+		if (!Starter->jic->machClassAd()->LookupInteger(ATTR_MEMORY, memory)) {
+			dprintf(D_ALWAYS, "Invalid value of memory in machine ClassAd; aboring\n");
+			ASSERT(false);
+		}
+		fi.cgroup_memory_limit = 0;
+
+		// Need to set this in the unlikely case that we get OOM killed without
+		// setting cgroup memory limits
+		m_memory_limit = memory * 1024 * 1024;
+		std::string policy;
+		param(policy, "CGROUP_MEMORY_LIMIT_POLICY", "hard");
+		if (policy == "hard") {
+			fi.cgroup_memory_limit = (uint64_t) memory * 1024 * 1024;
+		}
+
+		dprintf(D_FULLDEBUG, "Requesting cgroup %s for job with %d cpu weight and memory limit of %lu (slot memory is %ld).\n", cgroup, fi.cgroup_cpu_shares, fi.cgroup_memory_limit, memory);
 	}
 
 #endif
@@ -391,18 +374,22 @@ VanillaProc::StartJob()
                bool acceptable_chroot = false;
                std::string requested_chroot;
                while ( (next_chroot=chroot_list.next()) ) {
-                       MyStringWithTokener chroot_spec(next_chroot);
-                       chroot_spec.Tokenize();
-                       const char * chroot_name = chroot_spec.GetNextToken("=", false);
-                       if (chroot_name == NULL) {
-                               dprintf(D_ALWAYS, "Invalid named chroot: %s\n", chroot_spec.c_str());
+                       StringTokenIterator chroot_spec(next_chroot, "=");
+                       const char* tok;
+                       tok = chroot_spec.next();
+                       if (tok == NULL) {
+                               dprintf(D_ALWAYS, "Invalid named chroot: %s\n", next_chroot);
+                               continue;
                        }
-                       const char * next_dir = chroot_spec.GetNextToken("=", false);
-                       if (chroot_name == NULL) {
-                               dprintf(D_ALWAYS, "Invalid named chroot: %s\n", chroot_spec.c_str());
+                       std::string chroot_name = tok;
+                       tok = chroot_spec.next();
+                       if (tok == NULL) {
+                               dprintf(D_ALWAYS, "Invalid named chroot: %s\n", next_chroot);
+                               continue;
                        }
-                       dprintf(D_FULLDEBUG, "Considering directory %s for chroot %s.\n", next_dir, chroot_spec.c_str());
-                       if (IsDirectory(next_dir) && chroot_name && (strcmp(requested_chroot_name.c_str(), chroot_name) == 0)) {
+                       std::string next_dir = tok;
+                       dprintf(D_FULLDEBUG, "Considering directory %s for chroot %s.\n", next_dir.c_str(), next_chroot);
+                       if (IsDirectory(next_dir.c_str()) && requested_chroot_name == chroot_name) {
                                acceptable_chroot = true;
                                requested_chroot = next_dir;
                        }
@@ -426,7 +413,7 @@ VanillaProc::StartJob()
                        {
                            TemporaryPrivSentry sentry(PRIV_ROOT);
                            if( mkdir(full_dir_str.c_str(), S_IRWXU) < 0 ) {
-                               dprintf( D_FAILURE|D_ALWAYS,
+                               dprintf( D_ERROR,
                                    "Failed to create sandbox directory in chroot (%s): %s\n",
                                    full_dir_str.c_str(),
                                    strerror(errno) );
@@ -442,7 +429,7 @@ VanillaProc::StartJob()
                            }
                        }
                        if (!fs_remap) {
-                               fs_remap = new FilesystemRemap();
+                           fs_remap.reset(new FilesystemRemap());
                        }
                        dprintf(D_FULLDEBUG, "Adding mapping: %s -> %s.\n", execute_dir.c_str(), full_dir_str.c_str());
                        if (fs_remap->AddMapping(execute_dir, full_dir_str)) {
@@ -507,7 +494,7 @@ VanillaProc::StartJob()
 
 			mount_list.rewind();
 			if (!fs_remap) {
-				fs_remap = new FilesystemRemap();
+				fs_remap.reset(new FilesystemRemap());
 			}
 			const char * next_dir;
 			while ( (next_dir=mount_list.next()) ) {
@@ -532,18 +519,15 @@ VanillaProc::StartJob()
 
 						if (!mkdir_and_parents_if_needed( full_dir, S_IRWXU, PRIV_USER )) {
 							dprintf(D_ALWAYS, "Failed to create scratch directory %s\n", full_dir);
-							delete fs_remap;
 							return FALSE;
 						}
 						dprintf(D_FULLDEBUG, "Adding mapping: %s -> %s.\n", full_dir, next_dir);
 						if (fs_remap->AddMapping(full_dir, next_dir)) {
 							// FilesystemRemap object prints out an error message for us.
-							delete fs_remap;
 							return FALSE;
 						}
 					} else {
 						dprintf(D_ALWAYS, "Unable to concatenate %s and %s.\n", working_dir, next_dir);
-						delete fs_remap;
 						return FALSE;
 					}
 				} else {
@@ -553,7 +537,6 @@ VanillaProc::StartJob()
 		Starter->setTmpDir("/tmp");
 		} else {
 			dprintf(D_ALWAYS, "Unable to perform mappings because %s doesn't exist.\n", working_dir);
-			delete fs_remap;
 			return FALSE;
 		}
 	}
@@ -574,7 +557,7 @@ VanillaProc::StartJob()
 		fi.want_pid_namespace = this->SupportsPIDNamespace();
 		if (fi.want_pid_namespace) {
 			if (!fs_remap) {
-				fs_remap = new FilesystemRemap();
+				fs_remap.reset(new FilesystemRemap());
 			}
 			fs_remap->RemapProc();
 		}
@@ -599,19 +582,16 @@ VanillaProc::StartJob()
 
 			if (!env.MergeFrom(JobAd,  env_errors)) {
 				dprintf(D_ALWAYS, "Cannot merge environ from classad so cannot run condor_pid_ns_init\n");
-				delete fs_remap;
 				return 0;
 			}
 			env.SetEnv("_CONDOR_PID_NS_INIT_STATUS_FILENAME", filename);
 
 			if (!env.InsertEnvIntoClassAd(*JobAd,  env_errors)) {
 				dprintf(D_ALWAYS, "Cannot Insert environ from classad so cannot run condor_pid_ns_init\n");
-				delete fs_remap;
 				return 0;
 			}
 
 			Starter->jic->removeFromOutputFiles(condor_basename(filename.c_str()));
-			this->m_pid_ns_status_filename = filename;
 			
 			// Now, set the job's CMD to the wrapper, and shift
 			// over the arguments by one
@@ -620,23 +600,26 @@ VanillaProc::StartJob()
 			std::string cmd;
 
 			JobAd->LookupString(ATTR_JOB_CMD, cmd);
+
+			this->canonicalizeJobPath(cmd, Starter->jic->jobRemoteIWD());
+
+			// Must set this *after* calling canonicalizeJobPath!
+			this->m_pid_ns_status_filename = filename;
+
 			args.AppendArg(cmd);
 			if (!args.AppendArgsFromClassAd(JobAd, arg_errors)) {
 				dprintf(D_ALWAYS, "Cannot Append args from classad so cannot run condor_pid_ns_init\n");
-				delete fs_remap;
 				return 0;
 			}
 
 			if (!args.InsertArgsIntoClassAd(JobAd, NULL, arg_errors)) {
 				dprintf(D_ALWAYS, "Cannot Insert args into classad so cannot run condor_pid_ns_init\n");
-				delete fs_remap;
 				return 0;
 			}
 	
 			std::string libexec;
 			if( !param(libexec,"LIBEXEC") ) {
 				dprintf(D_ALWAYS, "Cannot find LIBEXEC so can not run condor_pid_ns_init\n");
-				delete fs_remap;
 				return 0;
 			}
 			std::string c_p_n_i = libexec + "/condor_pid_ns_init";
@@ -650,23 +633,9 @@ VanillaProc::StartJob()
 
 	// have OsProc start the job
 	//
-	int retval = OsProc::StartJob(&fi, fs_remap);
+	int retval = OsProc::StartJob(&fi, fs_remap.get());
 
-	if (fs_remap != NULL) {
-		delete fs_remap;
-	}
-
-#if defined(HAVE_EXT_LIBCGROUP)
-
-	// Set fairshare limits.  Note that retval == 1 indicates success, 0 is failure.
-	// See Note near setup of param(BASE_CGROUP)
-	if (CONDOR_UNIVERSE_LOCAL != job_universe && cgroup && retval) {
 #ifdef LINUX
-		setCgroupMemoryLimits(cgroup);
-#endif
-		setupOOMEvent(cgroup);
-	}
-
     m_statistics.Reconfig();
 
 	// Now that the job is started, decrease the likelihood that the starter
@@ -816,8 +785,18 @@ VanillaProc::notifySuccessfulPeriodicCheckpoint( int checkpointNumber ) {
 	// might as well send it along.
 	//
 	ClassAd updateAd;
+
 	Starter->publishUpdateAd( & updateAd );
 	updateAd.Assign( ATTR_JOB_CHECKPOINT_NUMBER, checkpointNumber );
+
+	// UserProc::PublishUpdateAd() truncates, so we will too.
+	int lastCheckpointTime = job_exit_time.tv_sec;
+	updateAd.Assign( ATTR_JOB_LAST_CHECKPOINT_TIME, lastCheckpointTime );
+
+	// UserProc::PublishUpdateAd() truncates, so we will too.
+	int newlyCommittedTime = (int)timersub_double(job_exit_time, job_start_time);
+	updateAd.Assign( ATTR_JOB_NEWLY_COMMITTED_TIME, newlyCommittedTime );
+
 	Starter->jic->periodicJobUpdate( & updateAd, false );
 }
 
@@ -872,11 +851,90 @@ void VanillaProc::restartCheckpointedJob() {
 	StartJob();
 }
 
+
+/*
+ * This will be called when DC tells us the process exited to due a OOM event.
+ */
+int
+VanillaProc::outOfMemoryEvent() {
+
+	/* The cgroup API generates this notification whenever the OOM fires OR
+	 * the cgroup is removed. If the cgroups are not pre-created, the kernel will
+	 * remove the cgroup when the job completes. So if we land here and there are
+	 * no more job pids, we assume the cgroup was removed and just ignore the event.
+	 * However, if we land here and we still have job pids, we assume the OOM fired
+	 * and thus we place the job on hold. See gt#3824.
+	 */
+
+	// The OOM killer has fired, and the process is frozen.  However,
+	// the cgroup still has accurate memory usage.  Let's grab that
+	// and make a final update, so the user can see exactly how much
+	// memory they used.
+	ClassAd updateAd;
+	PublishUpdateAd( &updateAd );
+	Starter->jic->periodicJobUpdate( &updateAd, true );
+	int64_t usageKB = 0;
+	// This is the peak
+	updateAd.LookupInteger(ATTR_IMAGE_SIZE, usageKB);
+	int64_t usageMB = usageKB / 1024;
+
+	//
+	//  Cgroup memory limits are limits, not reservations.
+	//  For many reasons, a job could be below the memory limit,
+	//  but still get an OOM notification.  Commonly, this happens
+	//  when other processes on the system are using large amounts
+	//  of memory.  
+	//
+	//  Check to see if this is the case, and if so, it 
+	//  isn't our job's fault, but we need to 
+	//  evict the job, so it might run more successfully somewhere
+	//  else.  The situation is pretty dire, so we likely can't
+	//  checkpoint or otherwise exit gracefully, but at least let's
+	//  try to get a message a back to the shadow.
+
+	// Why not 100%?  We have seen cases where our last cgroup poll was a bit 
+	// lower than the limit when the OOM killer fired.
+	// So have some slop, just in case.
+	if (usageMB < (0.9 * (m_memory_limit / (1024 * 1024)))) {
+		dprintf(D_ALWAYS, "Evicting job because system is out of memory, even though the job is below requested memory: Usage is %lld Mb limit is %lld\n", (long long)usageMB, (long long)m_memory_limit);
+		Starter->jic->notifyStarterError("Worker node is out of memory", true, 0, 0);
+		Starter->jic->allJobsGone(); // and exit to clean up more memory
+		return 0;
+	}
+
+	std::stringstream ss;
+	if (m_memory_limit >= 0) {
+		ss << "Job has gone over memory limit of " << (m_memory_limit / (1024 * 1024))  << " megabytes. Peak usage: " << usageMB << " megabytes.";
+	} else {
+		ss << "Job has encountered an out-of-memory event.";
+	}
+	if( isCheckpointing ) {
+		ss << "  This occurred while the job was checkpointing.";
+	}
+
+	dprintf( D_ALWAYS, "Job was held due to OOM event: %s\n", ss.str().c_str());
+
+	// This ulogs the hold event and KILLS the shadow
+	Starter->jic->holdJob(ss.str().c_str(), CONDOR_HOLD_CODE::JobOutOfResources, 0);
+
+	return 0;
+}
+
 bool
 VanillaProc::JobReaper(int pid, int status)
 {
 	dprintf(D_FULLDEBUG,"Inside VanillaProc::JobReaper()\n");
 
+	// If cgroup v2 is enabled, we'll get this high bit set in exit_status
+#ifdef LINUX
+	if (status & DC_STATUS_OOM_KILLED) {
+		// Will put the job on hold
+		this->outOfMemoryEvent();
+		status &= ~DC_STATUS_OOM_KILLED;
+	} 
+#endif
+	
+	//
 	//
 	// Run all the reapers first, since some of them change the exit status.
 	//
@@ -885,26 +943,6 @@ VanillaProc::JobReaper(int pid, int status)
 	}
 	bool jobExited = OsProc::JobReaper( pid, status );
 	if( pid != JobPid ) { return jobExited; }
-
-#if defined(LINUX)
-	// On newer kernels if memory.use_hierarchy==1, then we cannot disable
-	// the OOM killer.  Hence, we have to be ready for a SIGKILL to be delivered
-	// by the kernel at the same time we get the notification.  Hence, if we
-	// see an exit signal, we must also check the event file descriptor.
-	//
-	// outOfMemoryEvent() is aware of checkpointing and will mention that
-	// the OOM event happened during a checkpoint.
-	int efd = -1;
-	if( (m_oom_efd >= 0) && daemonCore->Get_Pipe_FD(m_oom_efd, &efd) && (efd != -1) ) {
-		Selector selector;
-		selector.add_fd(efd, Selector::IO_READ);
-		selector.set_timeout(0);
-		selector.execute();
-		if( !selector.failed() && !selector.timed_out() && selector.has_ready() && selector.fd_ready(efd, Selector::IO_READ) ) {
-			outOfMemoryEvent( m_oom_efd );
-		}
-	}
-#endif
 
 	//
 	// We have three cases to consider:
@@ -992,6 +1030,10 @@ VanillaProc::JobReaper(int pid, int status)
 		// registered with DaemonCore and we'll never be able to
 		// get this information again.
 		recordFinalUsage();
+
+		// We're going to exit, so daemon core won't get a chance to unregister our subfamily
+		// force that no
+		daemonCore->Unregister_subfamily(pid);
 
 		return jobExited;
 	}
@@ -1085,108 +1127,7 @@ VanillaProc::finishShutdownFast()
 	//   -gquinn, 2007-11-14
 	daemonCore->Kill_Family(JobPid);
 
-	if (m_oom_efd != -1) {dprintf(D_FULLDEBUG, "Closing event FD pipe in shutdown %d.\n", m_oom_efd);}
-	cleanupOOM();
-
 	return false;	// shutdown is pending, so return false
-}
-
-/*
- * Clean up any file descriptors associated with the OOM control.
- */
-void
-VanillaProc::cleanupOOM()
-{
-	if (m_oom_efd != -1)
-	{
-		daemonCore->Close_Pipe(m_oom_efd);
-		daemonCore->Close_Pipe(m_oom_efd2);
-		m_oom_efd = -1;
-		m_oom_efd2 = -1;
-	}
-	if (m_oom_fd != -1)
-	{
-		close(m_oom_fd);
-		m_oom_fd = -1;
-	}
-}
-
-/*
- * This will be called when the event fd fires, indicating an OOM event.
- */
-int
-VanillaProc::outOfMemoryEvent(int /* fd */)
-{
-
-	/* The cgroup API generates this notification whenever the OOM fires OR
-	 * the cgroup is removed. If the cgroups are not pre-created, the kernel will
-	 * remove the cgroup when the job completes. So if we land here and there are
-	 * no more job pids, we assume the cgroup was removed and just ignore the event.
-	 * However, if we land here and we still have job pids, we assume the OOM fired
-	 * and thus we place the job on hold. See gt#3824.
-	 */
-
-	// If we have no jobs left, prolly just cgroup removed, so do nothing and return
-	
-	if (num_pids == 0) {
-		dprintf(D_FULLDEBUG, "Closing event FD pipe %d.\n", m_oom_efd);
-		cleanupOOM();
-		return 0;
-	}
-
-	// The OOM killer has fired, and the process is frozen.  However,
-	// the cgroup still has accurate memory usage.  Let's grab that
-	// and make a final update, so the user can see exactly how much
-	// memory they used.
-	ClassAd updateAd;
-	PublishUpdateAd( &updateAd );
-	Starter->jic->periodicJobUpdate( &updateAd, true );
-	int usage = 0;
-	updateAd.LookupInteger(ATTR_MEMORY_USAGE, usage);
-
-		//
-#ifdef LINUX
-	if (param_boolean("IGNORE_LEAF_OOM", true)) {
-		// if memory.use_hierarchy is 1, then hitting the limit at
-		// the parent notifies all children, even if those children
-		// are below their usage.  If we are below our usage, ignore
-		// the OOM, and continue running.  Hopefully, some process
-		// will be killed, and when it does, this job will get unfrozen
-		// and continue running.
-
-		if (usage < (0.9 * m_memory_limit)) {
-			long long oomData = 0xdeadbeef;
-			int efd = -1;
-			ASSERT( daemonCore->Get_Pipe_FD(m_oom_efd, &efd) );
-				// need to drain notification fd, or it will still
-				// be hot, and we'll come right back here again
-			int r = read(efd, &oomData, 8);
-
-			dprintf(D_ALWAYS, "Spurious OOM event, usage is %d, slot size is %d megabytes, ignoring OOM (read %d bytes)\n", usage, m_memory_limit, r);
-			return 0;
-		}
-	}
-#endif
-
-	std::stringstream ss;
-	if (m_memory_limit >= 0) {
-		ss << "Job has gone over memory limit of " << m_memory_limit << " megabytes. Peak usage: " << usage << " megabytes.";
-	} else {
-		ss << "Job has encountered an out-of-memory event.";
-	}
-	if( isCheckpointing ) {
-		ss << "  This occurred while the job was checkpointing.";
-	}
-
-	dprintf( D_ALWAYS, "Job was held due to OOM event: %s\n", ss.str().c_str());
-
-	dprintf(D_FULLDEBUG, "Closing event FD pipe %d.\n", m_oom_efd);
-	cleanupOOM();
-
-	// This ulogs the hold event and KILLS the shadow
-	Starter->jic->holdJob(ss.str().c_str(), CONDOR_HOLD_CODE::JobOutOfResources, 0);
-
-	return 0;
 }
 
 int
@@ -1236,168 +1177,6 @@ VanillaProc::setupOOMScore(int oom_adj, int oom_score_adj)
 		return 1;
 	}
 	close(oom_score_fd);
-	return 0;
-#endif
-}
-
-int
-VanillaProc::setupOOMEvent(const std::string &cgroup_string)
-{
-#if !(defined(HAVE_EVENTFD) && defined(HAVE_EXT_LIBCGROUP))
-	// Shut the compiler up.
-	cgroup_string.size();
-	return 0;
-#else
-	// Initialize the event descriptor
-	int tmp_efd = eventfd(0, EFD_CLOEXEC);
-	if (tmp_efd == -1) {
-		dprintf(D_ALWAYS,
-			"Unable to create new event FD for starter: %u %s\n",
-			errno, strerror(errno));
-		return 1;
-	}
-
-	// Find the memcg location on disk
-	void * handle = NULL;
-	struct cgroup_mount_point mount_info;
-	int ret = cgroup_get_controller_begin(&handle, &mount_info);
-	std::stringstream oom_control;
-	std::stringstream event_control;
-	bool found_memcg = false;
-	while (ret == 0) {
-		if (strcmp(mount_info.name, MEMORY_CONTROLLER_STR) == 0) {
-			found_memcg = true;
-			oom_control << mount_info.path << "/";
-			event_control << mount_info.path << "/";
-			break;
-		}
-		ret = cgroup_get_controller_next(&handle, &mount_info);
-	}
-	if (!found_memcg && (ret != ECGEOF)) {
-		dprintf(D_ALWAYS,
-			"Error while locating memcg controller for starter: %u %s\n",
-			ret, cgroup_strerror(ret));
-		return 1;
-	}
-	cgroup_get_controller_end(&handle);
-	if (found_memcg == false) {
-		dprintf(D_ALWAYS,
-			"Memcg is not available; OOM notification disabled for starter.\n");
-		return 1;
-	}
-
-	// Finish constructing the location of the control files
-	oom_control << cgroup_string << "/memory.oom_control";
-	std::string oom_control_str = oom_control.str();
-	event_control << cgroup_string << "/cgroup.event_control";
-	std::string event_control_str = event_control.str();
-
-	// Open the oom_control and event control files
-	TemporaryPrivSentry sentry(PRIV_ROOT);
-	m_oom_fd = open(oom_control_str.c_str(), O_RDONLY | O_CLOEXEC);
-	if (m_oom_fd == -1) {
-		dprintf(D_ALWAYS,
-			"Unable to open the OOM control file for starter: %u %s\n",
-			errno, strerror(errno));
-		return 1;
-	}
-	int event_ctrl_fd = open(event_control_str.c_str(), O_WRONLY | O_CLOEXEC);
-	if (event_ctrl_fd == -1) {
-		dprintf(D_ALWAYS,
-			"Unable to open event control for starter: %u %s\n",
-			errno, strerror(errno));
-		return 1;
-	}
-
-	// Inform Linux we will be handling the OOM events for this container.
-	int oom_fd2 = open(oom_control_str.c_str(), O_WRONLY | O_CLOEXEC);
-	if (oom_fd2 == -1) {
-		dprintf(D_ALWAYS,
-			"Unable to open the OOM control file for writing for starter: %u %s\n",
-			errno, strerror(errno));
-		close(event_ctrl_fd);
-		return 1;
-	}
-	const char limits [] = "1";
-        ssize_t nwritten = full_write(oom_fd2, &limits, 1);
-	if (nwritten < 0) {
-		/* Newer kernels return EINVAL if you attempt to enable OOM management
-		 * on a cgroup where use_hierarchy is set to 1 and it is not the parent
-		 * cgroup.
-		 *
-		 * This is a common setup, so we log and move along.
-		 *
-		 * See also #4435.
-		 */
-		if (errno == EINVAL)
-		{
-			dprintf(D_FULLDEBUG, "Unable to setup OOM killer management because"
-				" memory.use_hierarchy is enabled for this cgroup; consider"
-				" disabling it for this host or set BASE_CGROUP=/.  The hold"
-				" message for an OOM event may not be reliably set.\n");
-		}
-		else
-		{
-			dprintf(D_ALWAYS, "Failure when attempting to enable OOM killer "
-				" management for this job (errno=%d, %s).\n", errno, strerror(errno));
-			close(event_ctrl_fd);
-			close(oom_fd2);
-			close(tmp_efd);
-			return 1;
-		}
-
-	}
-	close(oom_fd2);
-
-	// Create the subscription string:
-	std::stringstream sub_ss;
-	sub_ss << tmp_efd << " " << m_oom_fd;
-	std::string sub_str = sub_ss.str();
-
-	if ((nwritten = full_write(event_ctrl_fd, sub_str.c_str(), sub_str.size())) < 0) {
-		dprintf(D_ALWAYS,
-			"Unable to write into event control file for starter: %u %s\n",
-			errno, strerror(errno));
-		close(event_ctrl_fd);
-		close(tmp_efd);
-		return 1;
-	}
-	close(event_ctrl_fd);
-
-	// Fool DC into talking to the eventfd
-	int pipes[2]; pipes[0] = -1; pipes[1] = -1;
-	int fd_to_replace = -1;
-	if (!daemonCore->Create_Pipe(pipes, true) || pipes[0] == -1) {
-		dprintf(D_ALWAYS, "Unable to create a DC pipe\n");
-		close(tmp_efd);
-		close(m_oom_fd);
-		m_oom_fd = -1;
-		return 1;
-	}
-	if (!daemonCore->Get_Pipe_FD(pipes[0], &fd_to_replace) || fd_to_replace == -1) {
-		dprintf(D_ALWAYS, "Unable to lookup pipe's FD\n");
-		close(tmp_efd);
-		close(m_oom_fd); m_oom_fd = -1;
-		daemonCore->Close_Pipe(pipes[0]);
-		daemonCore->Close_Pipe(pipes[1]);
-		return 1;
-	}
-	dup3(tmp_efd, fd_to_replace, O_CLOEXEC);
-	close(tmp_efd);
-	m_oom_efd = pipes[0];
-	m_oom_efd2 = pipes[1];
-
-	// Inform DC we want to receive notifications from this FD.
-	if (-1 == daemonCore->Register_Pipe(pipes[0],"OOM event fd", static_cast<PipeHandlercpp>(&VanillaProc::outOfMemoryEvent),"OOM Event Handler",this,HANDLE_READ))
-	{
-		dprintf(D_ALWAYS, "Failed to register OOM event FD pipe.\n");
-		daemonCore->Close_Pipe(pipes[0]);
-		daemonCore->Close_Pipe(pipes[1]);
-		m_oom_fd = -1;
-		m_oom_efd = -1;
-		m_oom_efd2 = -1;
-	}
-	dprintf(D_FULLDEBUG, "Subscribed the starter to OOM notification for this cgroup; jobs triggering an OOM will be put on hold.\n");
 	return 0;
 #endif
 }
@@ -1452,116 +1231,3 @@ int VanillaProc::streamingOpenFlags( bool isOutput ) {
 		return this->OsProc::streamingOpenFlags( isOutput );
 	}
 }
-
-#if defined(HAVE_EXT_LIBCGROUP)
-#ifdef LINUX
-void 
-VanillaProc::setCgroupMemoryLimits(const char *cgroup) {
-
-		ClassAd * MachineAd = Starter->jic->machClassAd();
-		std::string cgroup_string = cgroup;
-		CgroupLimits climits(cgroup_string);
-
-		// First, set the CPU shares
-		int numCores = 1;
-		if (MachineAd->LookupInteger(ATTR_CPUS, numCores)) {
-			climits.set_cpu_shares(numCores*100);
-		} else {
-			dprintf(D_FULLDEBUG, "Invalid value of Cpus in machine ClassAd; ignoring.\n");
-		}
-
-		// Now, set the memory limits
-		std::string mem_limit;
-		param(mem_limit, "CGROUP_MEMORY_LIMIT_POLICY", "none");
-		if (mem_limit == "none") {
-			dprintf(D_ALWAYS, "Not enforcing cgroup memory limit because CGROUP_MEMORY_LIMIT_POLICY is \"none\".\n");
-			return;
-		}
-
-		if ((mem_limit != "hard") && (mem_limit != "soft") && (mem_limit != "custom")) {
-			dprintf(D_ALWAYS, "Not enforcing cgroup memory limit because CGROUP_MEMORY_LIMIT_POLICY is an unknown value: %s.\n", mem_limit.c_str());
-			return;
-		}
-
-		// The default hard memory limit -- the amount of memory in the slot
-		std::string hard_memory_limit_expr = "My.Memory";
-
-		// The default soft memory limit -- 90% of the amount of memory in the slot
-		std::string soft_memory_limit_expr = "0.9 * My.Memory";
-
-		if (mem_limit == "soft") {
-				// If the policy is soft, make the hard limit the total memory for this startd
-				hard_memory_limit_expr = "My.TotalMemory";
-				// If the policy is soft, make the soft limit the slot size
-				soft_memory_limit_expr = "My.Memory";
-		} else if (mem_limit == "custom") {
-				param(hard_memory_limit_expr, "CGROUP_HARD_MEMORY_LIMIT_EXPR", "");
-				if (hard_memory_limit_expr.empty()) {
-					dprintf(D_ALWAYS, "Missing CGROUP_HARD_MEMORY_LIMIT_EXPR, this must be set when CGROUP_MEMORY_LIMIT_POLICY is custom\n");
-					return;
-				}
-				param(soft_memory_limit_expr, "CGROUP_SOFT_MEMORY_LIMIT_EXPR", "");
-				if (soft_memory_limit_expr.empty()) {
-					dprintf(D_ALWAYS, "Missing CGROUP_SOFT_MEMORY_LIMIT_EXPR, this must be set when CGROUP_MEMORY_LIMIT_POLICY is custom\n");
-					return;
-				}
-		}
-
-		int64_t hard_limit = 0;
-		int64_t soft_limit = 0;
-
-		ExprTree *expr = nullptr;
-		::ParseClassAdRvalExpr(hard_memory_limit_expr.c_str(), expr);
-		if (expr == nullptr) {
-			dprintf(D_ALWAYS, "Can't parse CGROUP_HARD_MEMORY_LIMIT_EXPR: %s, ignoring\n", hard_memory_limit_expr.c_str());
-			return;
-		}
-
-		classad::Value value;
-		int evalRet = EvalExprTree(expr, MachineAd, JobAd, value);
-		if ((!evalRet) || (!value.IsNumber(hard_limit))) {
-			dprintf(D_ALWAYS, "Can't evaluate CGROUP_HARD_MEMORY_LIMIT_EXPR: %s, ignoring\n", hard_memory_limit_expr.c_str());
-			delete expr;
-			return;
-		}
-
-		delete expr;
-		expr = nullptr;
-
-		::ParseClassAdRvalExpr(soft_memory_limit_expr.c_str(), expr);
-		if (expr == nullptr) {
-			dprintf(D_ALWAYS, "Can't parse CGROUP_SOFT_MEMORY_LIMIT_EXPR: %s, ignoring\n", soft_memory_limit_expr.c_str());
-			return;
-		}
-
-		evalRet = EvalExprTree(expr, MachineAd, JobAd, value);
-		if ((!evalRet) || (!value.IsNumber(soft_limit))) {
-			dprintf(D_ALWAYS, "Can't evaluate CGROUP_SOFT_MEMORY_LIMIT_EXPR: %s, ignoring\n", soft_memory_limit_expr.c_str());
-			delete expr;
-			return;
-		}
-		delete expr;
-
-		// cgroups prevents us from setting hard limits above
-		// the memsw limit.  If we are reusing this cgroup,
-		// we don't know what the previous values were
-		// So, set mem to 0, memsw to +inf, so that the real
-		// values can be set without interference
-
-		climits.set_memory_limit_bytes(0, true);
-		climits.set_memsw_limit_bytes(LONG_MAX);
-
-		// If we get an OOM, check against this value to see if it our fault, or a global OOM
-		m_memory_limit = soft_limit;
-		climits.set_memory_limit_bytes(1024 * 1024 * hard_limit, false /* == hard */);
-		climits.set_memory_limit_bytes(1024 * 1024 * soft_limit, true /* == soft */);
-
-		// if DISABLE_SWAP_FOR_JOB is true, set swap to hard memory limit
-		// otherwise, leave at infinity
-
-		if (param_boolean("DISABLE_SWAP_FOR_JOB", false)) {
-			climits.set_memsw_limit_bytes(1024 * 1024 * hard_limit);
-		}
-}
-#endif
-#endif

@@ -122,10 +122,11 @@ getline_implementation( T & src, int requested_bufsize, int options, int & line_
 		int		len = buflen - (end_ptr - buf);
 		if( len <= 5 ) {
 			// we need a larger buffer -- grow buffer by 4kbytes
+			ptrdiff_t line_offset = line_ptr - buf;
 			char *newbuf = (char *)realloc(buf, 4096 + buflen);
 			if ( newbuf ) {
 				end_ptr = (end_ptr - buf) + newbuf;
-				line_ptr = (line_ptr - buf) + newbuf;
+				line_ptr = line_offset + newbuf;
 				buf = newbuf;	// note: realloc() freed our old buf if needed
 				buflen += 4096;
 				len += 4096;
@@ -1015,7 +1016,7 @@ int Parse_config_string(MACRO_SOURCE & source, int depth, const char * config, M
 		std::string errmsg;
 		if (ifstack.line_is_if(line, errmsg, macro_set, ctx)) {
 			if ( ! errmsg.empty()) {
-				dprintf(D_CONFIG | D_FAILURE, "Parse_config if error: '%s' line: %s\n", errmsg.c_str(), line);
+				dprintf(D_CONFIG | D_ERROR_ALSO, "Parse_config if error: '%s' line: %s\n", errmsg.c_str(), line);
 				return -1111;
 			} else {
 				dprintf(D_CONFIG | D_VERBOSE, "config %lld,%lld,%lld line: %s\n", ifstack.top, ifstack.state, ifstack.estate, line);
@@ -1196,7 +1197,7 @@ void MACRO_SET::push_error(FILE * fh, int code, const char* preface, const char*
 			if (message[cchPre-1] == '\n') { --cchPre; }
 			else { message[cchPre-1] = ' '; }
 		}
-		vsprintf ( message + cchPre, format, ap );
+		vsnprintf(message + cchPre, cch + 1, format, ap);
 	}
 	va_end(ap);
 
@@ -1236,7 +1237,7 @@ static bool parse_include_options(char * str, int & opts, char *& pinto, const c
 {
 	err = NULL;
 	pinto = NULL;
-	StringTokenIterator it(str, 100, " \t");
+	StringTokenIterator it(str, " \t");
 	const std::string * tok = it.next_string();
 	if ( ! tok) return true;
 
@@ -1313,7 +1314,7 @@ bool MacroStreamCharSource::open(const char * src_string, const MACRO_SOURCE& _s
 {
 	src = _src;
 	if (input) delete input;
-	input = new StringTokenIterator(src_string, 128, "\n");
+	input = new StringTokenIterator(src_string, "\n");
 	return input != NULL;
 }
 
@@ -1356,7 +1357,7 @@ int MacroStreamCharSource::load(FILE* fp, MACRO_SOURCE & FileSource, bool preser
 
 	if (preserve_linenumbers && (FileSource.line != 0)) {
 		// if we aren't starting at line zero, inject a comment indicating the starting line number
-		MyString buf; buf.formatstr("#opt:lineno:%d", FileSource.line);
+		std::string buf; formatstr(buf, "#opt:lineno:%d", FileSource.line);
 		lines.append(buf.c_str());
 	}
 	while (true) {
@@ -1367,7 +1368,7 @@ int MacroStreamCharSource::load(FILE* fp, MACRO_SOURCE & FileSource, bool preser
 		lines.append(line);
 		if (preserve_linenumbers && (FileSource.line != lineno+1)) {
 			// if we read more than a single line, inject a comment indicating the new line number
-			MyString buf; buf.formatstr("#opt:lineno:%d", FileSource.line);
+			std::string buf; formatstr(buf, "#opt:lineno:%d", FileSource.line);
 			lines.append(buf.c_str());
 		}
 	}
@@ -1404,8 +1405,8 @@ Parse_macros(
 	int opt_meta_colon = (macro_set.options & CONFIG_OPT_COLON_IS_META_ONLY) ? 1 : 0;
 	ConfigIfStack ifstack;
 	StringList    hereList; // used to accumulate @= multiline values
-	MyString      hereName;
-	MyString      hereTag;
+	std::string      hereName;
+	std::string      hereTag;
 	MACRO_EVAL_CONTEXT defctx; defctx.init(NULL);
 	if ( ! pctx) pctx = &defctx;
 
@@ -1486,7 +1487,7 @@ Parse_macros(
 		std::string errmsg;
 		if (ifstack.line_is_if(name, errmsg, macro_set, *pctx)) {
 			if ( ! errmsg.empty()) {
-				dprintf(D_CONFIG | D_FAILURE, "Parse_config if error: '%s' line: %s\n", errmsg.c_str(), name);
+				dprintf(D_CONFIG | D_ERROR_ALSO, "Parse_config if error: '%s' line: %s\n", errmsg.c_str(), name);
 				config_errmsg = errmsg;
 				retval = -1;
 				name = NULL;
@@ -1924,8 +1925,8 @@ FILE* Open_macro_source (
 	if (is_pipe_cmd) {
 		if ( is_valid_command(source) ) {
 			ArgList argList;
-			MyString args_errors;
-			if(!argList.AppendArgsV1RawOrV2Quoted(cmd, &args_errors)) {
+			std::string args_errors;
+			if(!argList.AppendArgsV1RawOrV2Quoted(cmd, args_errors)) {
 				formatstr(config_errmsg, "Can't append args, %s", args_errors.c_str());
 				return NULL;
 			}
@@ -1984,8 +1985,8 @@ FILE* Copy_macro_source_into (
 	source = fixup_pipe_source(source, source_is_command, cmd, cmdbuf);
 	if (source_is_command) {
 		ArgList argList;
-		MyString args_errors;
-		if(!argList.AppendArgsV1RawOrV2Quoted(cmd, &args_errors)) {
+		std::string args_errors;
+		if(!argList.AppendArgsV1RawOrV2Quoted(cmd, args_errors)) {
 			formatstr(errmsg, "Can't append args, %s", args_errors.c_str());
 			return NULL;
 		}
@@ -2124,15 +2125,22 @@ extern "C++" MACRO_ITEM* find_macro_item (const char *name, const char * prefix,
 	}
 }
 
-// insert a source name into the MACRO_SET's table of names
-// and initialize the MACRO_SOURCE.
-void insert_source(const char * filename, MACRO_SET & set, MACRO_SOURCE & source)
+void insert_special_sources(MACRO_SET& set)
 {
 	if ( ! set.sources.size()) {
 		set.sources.push_back("<Detected>");
 		set.sources.push_back("<Default>");
 		set.sources.push_back("<Environment>");
 		set.sources.push_back("<Over>");
+	}
+}
+
+// insert a source name into the MACRO_SET's table of names
+// and initialize the MACRO_SOURCE.
+void insert_source(const char * filename, MACRO_SET & set, MACRO_SOURCE & source)
+{
+	if ( ! set.sources.size()) {
+		insert_special_sources(set);
 	}
 	source.line = 0;
 	source.is_inside = false;
@@ -2943,7 +2951,7 @@ char * expand_meta_args(const char *value, std::string & argstr)
 		if (special_id) {
 			all_done = false;
 
-			StringTokenIterator it(argstr, 40, ","); it.rewind();
+			StringTokenIterator it(argstr, ","); it.rewind();
 
 			std::string buf;
 			if (meta_only.index <= 0) {
@@ -2981,10 +2989,11 @@ char * expand_meta_args(const char *value, std::string & argstr)
 				tvalue = *tvalue ? "1" : "0";
 			}
 
-			rval = (char *)malloc( (unsigned)(strlen(left) + strlen(tvalue) + strlen(right) + 1));
+			size_t rval_sz = strlen(left) + strlen(tvalue) + strlen(right) + 1;
+			rval = (char *)malloc(rval_sz);
 			ASSERT(rval);
 
-			(void)sprintf( rval, "%s%s%s", left, tvalue, right );
+			(void)snprintf( rval, rval_sz, "%s%s%s", left, tvalue, right );
 			free( tmp );
 			tmp = rval;
 		}
@@ -3120,9 +3129,31 @@ const char * lookup_macro(const char * name, MACRO_SET & macro_set, MACRO_EVAL_C
 	return lval;
 }
 
+const char * lookup_macro_default(const char * name, MACRO_SET & macro_set, MACRO_EVAL_CONTEXT & ctx)
+{
+	if ( ! macro_set.defaults) {
+		return nullptr;
+	}
+
+	const MACRO_DEF_ITEM * p = nullptr;
+	if (ctx.localname) {
+		p = find_macro_subsys_def_item(name, ctx.localname, macro_set, ctx.use_mask);
+	}
+	if ( ! p && ctx.subsys) {
+		p = find_macro_subsys_def_item(name, ctx.subsys, macro_set, ctx.use_mask);
+	}
+	if ( ! p) {
+		p = find_macro_def_item(name, macro_set, ctx.use_mask);
+	}
+	if (p && p->def) {
+		return p->def->psz;
+	}
+	return nullptr;
+}
+
 // given the body text of a config macro, and the macro id and macro context
 // evaluate the body and return a string. the string may be a literal, or
-// may point into to the buffer returned in tbuf.  The caller will NOT free
+// may point into the buffer returned in tbuf.  The caller will NOT free
 // the return value, but will free tbuf if it is not NULL with the understanding
 // that the return value may be freed as a result.
 static const char * evaluate_macro_func (
@@ -3553,7 +3584,7 @@ static const char * evaluate_macro_func (
 					MACRO_EVAL_CONTEXT_EX &ctxx = reinterpret_cast<MACRO_EVAL_CONTEXT_EX&>(ctx);
 					classad::Value val;
 					ClassAd * ad = const_cast<ClassAd *>(ctxx.ad);
-					if (EvalExprTree(tree, ad, NULL, val)) {
+					if (EvalExprTree(tree, ad, NULL, val, classad::Value::ValueType::SAFE_VALUES)) {
 						if ( ! val.IsStringValue(tmp3)) {
 							classad::ClassAdUnParser unp;
 							tmp3.clear(); // because Unparse appends.
@@ -3564,7 +3595,7 @@ static const char * evaluate_macro_func (
 				} else {
 					ClassAd rhs;
 					classad::Value val;
-					if (EvalExprTree(tree, &rhs, NULL, val)) {
+					if (EvalExprTree(tree, &rhs, NULL, val, classad::Value::ValueType::SAFE_VALUES)) {
 						if ( ! val.IsStringValue(tmp3)) {
 							classad::ClassAdUnParser unp;
 							tmp3.clear(); // because Unparse appends.
@@ -3733,10 +3764,11 @@ expand_macro(const char *value,
 			auto_free_ptr tbuf; // malloc or strdup'd buffer (if needed)
 			tvalue = evaluate_macro_func(func, special_id, name, tbuf, macro_set, ctx);
 
-			rval = (char *)malloc( (unsigned)(strlen(left) + strlen(tvalue) + strlen(right) + 1));
+			size_t rval_sz = strlen(left) + strlen(tvalue) + strlen(right) + 1;
+			rval = (char *)malloc(rval_sz);
 			ASSERT(rval);
 
-			(void)sprintf( rval, "%s%s%s", left, tvalue, right );
+			(void)snprintf( rval, rval_sz, "%s%s%s", left, tvalue, right );
 			free( tmp );
 			tmp = rval;
 		}
@@ -3745,10 +3777,10 @@ expand_macro(const char *value,
 	// Now, deal with the special $(DOLLAR) macro.
 	DollarOnlyBody dollar_only; // matches only $(DOLLAR)
 	while( next_config_macro(is_config_macro, dollar_only, tmp, 0, &left, &name, &right, &func) ) {
-		rval = (char *)malloc( (unsigned)(strlen(left) + 1 +
-										  strlen(right) + 1));
+		size_t rval_sz = strlen(left) + 1 + strlen(right) + 1;
+		rval = (char *)malloc(rval_sz);
 		ASSERT( rval != NULL );
-		(void)sprintf( rval, "%s$%s", left, right );
+		(void)snprintf( rval, rval_sz, "%s$%s", left, right );
 		free( tmp );
 		tmp = rval;
 	}
@@ -3871,7 +3903,7 @@ typedef struct _config_macro_position {
 
 // given the body text of a config macro, and the macro id and macro context
 // evaluate the body and return a string. the string may be a literal, or
-// may point into to the buffer returned in tbuf.  The caller will NOT free
+// may point into the buffer returned in tbuf.  The caller will NOT free
 // the return value, but will free tbuf if it is not NULL with the understanding
 // that the return value may be freed as a result.
 static ptrdiff_t evaluate_macro_func (
@@ -4205,7 +4237,7 @@ static ptrdiff_t evaluate_macro_func (
 				std::string attr("CondorString");
 				if ( ! rhs.Insert(attr, tree)) {
 					delete tree; tree = NULL;
-				} else if(rhs.EvaluateAttr(attr, val) && val.IsStringValue()) {
+				} else if(rhs.EvaluateAttr(attr, val, classad::Value::STRING_VALUE) && val.IsStringValue()) {
 					// value is valid. use it instead of mval
 					val.IsStringValue(mval);
 				}
@@ -4239,7 +4271,7 @@ static ptrdiff_t evaluate_macro_func (
 					MACRO_EVAL_CONTEXT_EX &ctxx = reinterpret_cast<MACRO_EVAL_CONTEXT_EX&>(ctx);
 					classad::Value val;
 					ClassAd * ad = const_cast<ClassAd *>(ctxx.ad);
-					if (EvalExprTree(tree, ad, NULL, val)) {
+					if (EvalExprTree(tree, ad, NULL, val, classad::Value::ValueType::SAFE_VALUES)) {
 						if ( ! val.IsStringValue(argbuf)) {
 							classad::ClassAdUnParser unp;
 							argbuf.clear(); // because Unparse appends.
@@ -4249,7 +4281,7 @@ static ptrdiff_t evaluate_macro_func (
 				} else {
 					ClassAd rhs;
 					classad::Value val;
-					if (EvalExprTree(tree, &rhs, NULL, val)) {
+					if (EvalExprTree(tree, &rhs, NULL, val, classad::Value::ValueType::SAFE_VALUES)) {
 						if ( ! val.IsStringValue(argbuf)) {
 							classad::ClassAdUnParser unp;
 							argbuf.clear(); // because Unparse appends.
@@ -4836,7 +4868,7 @@ protected:
 ** expands the macro whose name is specified in the self argument.
 ** Expand parameter references of the form "left$(self)right".  This
 ** is deceptively simple, but does handle multiple and or nested references.
-** We only expand references to to the parameter specified by self. use expand_macro
+** We only expand references to the parameter specified by self. use expand_macro
 ** to expand all references. 
 */
 char *
@@ -4896,10 +4928,11 @@ expand_self_macro(const char *value,
 			auto_free_ptr tbuf; // malloc or strdup'd buffer (if needed)
 			tvalue = evaluate_macro_func(func, func_id, body, tbuf, macro_set, ctx);
 
-			rval = (char *)malloc( (unsigned)(strlen(left) + strlen(tvalue) + strlen(right) + 1));
+			size_t rval_sz = strlen(left) + strlen(tvalue) + strlen(right) + 1;
+			rval = (char *)malloc(rval_sz);
 			ASSERT(rval);
 
-			(void)sprintf( rval, "%s%s%s", left, tvalue, right );
+			(void)snprintf( rval, rval_sz, "%s%s%s", left, tvalue, right );
 			free( tmp );
 			tmp = rval;
 		}

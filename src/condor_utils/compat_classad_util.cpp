@@ -22,6 +22,7 @@
 #include "classad_oldnew.h"
 #include "string_list.h"
 #include "condor_adtypes.h"
+#include "condor_attributes.h"
 #include "classad/classadCache.h" // for CachedExprEnvelope
 
 #include "compat_classad_list.h"
@@ -173,8 +174,7 @@ bool ExprTreeIsLiteral(classad::ExprTree * expr, classad::Value & value)
 	}
 
 	if (kind == classad::ExprTree::LITERAL_NODE) {
-		classad::Value::NumberFactor factor;
-		((classad::Literal*)expr)->GetComponents(value, factor);
+		((classad::Literal*)expr)->GetComponents(value);
 		return true;
 	}
 
@@ -253,6 +253,39 @@ bool ExprTreeIsAttrRef(classad::ExprTree * expr, std::string & attr, bool * is_a
 		return !e2;
 	}
 	return false;
+}
+
+// returns true and appends the unparsed value of the given attribute
+// IFF the value might have $$() expansions in it
+// returns false if $$() is impossible (because int, etc).
+bool ExprTreeMayDollarDollarExpand(classad::ExprTree * tree,  std::string & unparse_buf)
+{
+	tree = SkipExprEnvelope(tree);
+	if ( ! tree) return false;
+
+	if (tree->GetKind() == classad::ExprTree::LITERAL_NODE) {
+		const auto non_string_types = classad::Value::ValueType::ERROR_VALUE
+				| classad::Value::ValueType::UNDEFINED_VALUE
+				| classad::Value::ValueType::BOOLEAN_VALUE
+				| classad::Value::ValueType::INTEGER_VALUE
+				| classad::Value::ValueType::REAL_VALUE
+				| classad::Value::ValueType::RELATIVE_TIME_VALUE
+				| classad::Value::ValueType::ABSOLUTE_TIME_VALUE;
+
+		classad::Literal * lit = ((classad::Literal*)tree);
+		if (lit->getValue().GetType() & non_string_types) {
+			return false; // these types cannot have $$() expansions
+		}
+
+		// simple string literals can be quickly checked for possible $$ expansion
+		const char * cstr;
+		if (lit->GetStringValue(cstr) && ! strchr(cstr, '$')) {
+			return false;
+		}
+	}
+
+	// append unparsed value into the buffer
+	return ExprTreeToString(tree, unparse_buf) != nullptr;
 }
 
 // return true if the expression is a comparision between an Attribute and a literal
@@ -423,8 +456,7 @@ int walk_attr_refs (
 		case classad::ExprTree::LITERAL_NODE: {
 			classad::ClassAd * ad;
 			classad::Value val;
-			classad::Value::NumberFactor	factor;
-			((const classad::Literal*)tree)->GetComponents( val, factor );
+			((const classad::Literal*)tree)->GetComponents( val);
 			if (val.IsClassAdValue(ad)) {
 				iret += walk_attr_refs(ad, pfn, pv);
 			}
@@ -558,8 +590,7 @@ int RewriteAttrRefs(classad::ExprTree * tree, const NOCASE_STRING_MAP & mapping)
 		case classad::ExprTree::LITERAL_NODE: {
 			classad::ClassAd * ad;
 			classad::Value val;
-			classad::Value::NumberFactor	factor;
-			((classad::Literal*)tree)->GetComponents( val, factor );
+			((classad::Literal*)tree)->GetComponents( val);
 			if (val.IsClassAdValue(ad)) {
 				iret += RewriteAttrRefs(ad, mapping);
 			}
@@ -652,51 +683,6 @@ int RewriteAttrRefs(classad::ExprTree * tree, const NOCASE_STRING_MAP & mapping)
 }
 
 
-bool EvalExprBool(ClassAd *ad, const char *constraint)
-{
-	static classad::ExprTree *tree = NULL;
-	static char * saved_constraint = NULL;
-	classad::Value result;
-	bool constraint_changed = true;
-	bool boolVal;
-
-	if ( saved_constraint ) {
-		if ( strcmp(saved_constraint,constraint) == 0 ) {
-			constraint_changed = false;
-		}
-	}
-
-	if ( constraint_changed ) {
-		// constraint has changed, or saved_constraint is NULL
-		if ( saved_constraint ) {
-			free(saved_constraint);
-			saved_constraint = NULL;
-		}
-		if ( tree ) {
-			delete tree;
-			tree = NULL;
-		}
-		if ( ParseClassAdRvalExpr( constraint, tree ) != 0 ) {
-			dprintf( D_ALWAYS,
-				"can't parse constraint: %s\n", constraint );
-			return false;
-		}
-		saved_constraint = strdup( constraint );
-	}
-
-	// Evaluate constraint with ad in the target scope so that constraints
-	// have the same semantics as the collector queries.  --RR
-	if ( !EvalExprTree( tree, ad, NULL, result ) ) {
-		dprintf( D_ALWAYS, "can't evaluate constraint: %s\n", constraint );
-		return false;
-	}
-	if( result.IsBooleanValueEquiv( boolVal ) ) {
-		return boolVal;
-	}
-	dprintf( D_FULLDEBUG, "constraint (%s) does not evaluate to bool\n",
-		constraint );
-	return false;
-}
 
 bool EvalExprBool(ClassAd *ad, classad::ExprTree *tree)
 {
@@ -705,7 +691,7 @@ bool EvalExprBool(ClassAd *ad, classad::ExprTree *tree)
 
 	// Evaluate constraint with ad in the target scope so that constraints
 	// have the same semantics as the collector queries.  --RR
-	if ( !EvalExprTree( tree, ad, NULL, result ) ) {        
+	if ( !EvalExprToBool( tree, ad, NULL, result ) ) {
 		return false;
 	}
 
@@ -762,14 +748,85 @@ bool ClassAdsAreSame( ClassAd *ad1, ClassAd * ad2, StringList *ignored_attrs, bo
 	return ! found_diff;
 }
 
-int EvalExprTree( classad::ExprTree *expr, ClassAd *source,
+// copy attributes listed as "MachineResources" from the src to the destination ad
+// This will also copy Available<res> attributes and any attributes referenced therein
+void CopyMachineResources(ClassAd &destAd, const ClassAd & srcAd, bool include_res_list)
+{
+	std::string resnames, attr;
+	if(srcAd.LookupString( ATTR_MACHINE_RESOURCES, resnames)) {
+		if (include_res_list) { destAd.Assign(ATTR_MACHINE_RESOURCES, resnames); }
+	} else {
+		resnames = "CPUs, Disk, Memory";
+	}
+
+	// copy the primary quantities of each of the machine resources into the starter ad
+	// for AvailableGPUs, also copy the gpu properties if any
+	StringTokenIterator tags(resnames);
+	for (const char * tag = tags.first(); tag != nullptr; tag = tags.next()) {
+		ExprTree * tree = srcAd.Lookup(tag);
+		if (tree) { 
+			tree = SkipExprEnvelope(tree);
+			destAd.Insert(tag, tree->Copy());
+		}
+
+		// if there is an attribute "Available<tag>" in the machine ad
+		// copy it, and also any attributes that it references
+		attr = "Available"; attr += tag;
+		tree = srcAd.Lookup(attr);
+		if (tree) {
+			tree = SkipExprEnvelope(tree);
+			destAd.Insert(attr, tree->Copy());
+
+			classad::References refs;
+			srcAd.GetInternalReferences(tree, refs, true);
+			for (auto it : refs) {
+				ExprTree * expr = srcAd.Lookup(it);
+				if (expr) { 
+					expr = SkipExprEnvelope(expr);
+					destAd.Insert(it, expr->Copy());
+				}
+			}
+		}
+	}
+}
+
+// Copy all matching attributes in attrs list along with any referenced attrs
+// from srcAd to destAd. If overwrite is True then an attrbute that already
+// exists in the destAd can be overwritten by data from the srcAd
+void CopySelectAttrs(ClassAd &destAd, const ClassAd &srcAd, const std::string &attrs, bool overwrite)
+{
+	classad::References refs;
+	StringTokenIterator listAttrs(attrs);
+	// Create set of attribute references to copy
+	for (auto attr : listAttrs) {
+		ExprTree *tree = srcAd.Lookup(attr);
+		if (tree) {
+			refs.insert(attr);
+			srcAd.GetInternalReferences(tree, refs, true);
+		}
+	}
+	// Copy found references
+	for (auto it : refs) {
+		ExprTree *expr = srcAd.Lookup(it);
+		if (expr) {
+			// Only copy if given overwrite or if not found in destAd
+			if (overwrite || !destAd.Lookup(it)) {
+				expr = SkipExprEnvelope(expr);
+				destAd.Insert(it, expr->Copy());
+			}
+		}
+	}
+}
+
+bool EvalExprTree( classad::ExprTree *expr, ClassAd *source,
 				  ClassAd *target, classad::Value &result,
+				  classad::Value::ValueType type_mask,
 				  const std::string & sourceAlias,
 				  const std::string & targetAlias )
 {
-	int rc = TRUE;
+	bool rc = true;
 	if ( !expr || !source ) {
-		return FALSE;
+		return false;
 	}
 
 	const classad::ClassAd *old_scope = expr->GetParentScope();
@@ -779,8 +836,8 @@ int EvalExprTree( classad::ExprTree *expr, ClassAd *source,
 	if ( target && target != source ) {
 		mad = getTheMatchAd( source, target, sourceAlias, targetAlias );
 	}
-	if ( !source->EvaluateExpr( expr, result ) ) {
-		rc = FALSE;
+	if ( !source->EvaluateExpr( expr, result, type_mask ) ) {
+		rc = false;
 	}
 
 	if ( mad ) {
@@ -808,8 +865,8 @@ static std::vector<ClassAd*> *matched_ads = NULL;
 bool ParallelIsAMatch(ClassAd *ad1, std::vector<ClassAd*> &candidates, std::vector<ClassAd*> &matches, int threads, bool halfMatch)
 {
 	int adCount = candidates.size();
-	static int cpu_count = 0;
-	int current_cpu_count = threads;
+	static size_t cpu_count = 0;
+	size_t current_cpu_count = threads;
 	int iterations = 0;
 	size_t matched = 0;
 
@@ -843,7 +900,7 @@ bool ParallelIsAMatch(ClassAd *ad1, std::vector<ClassAd*> &candidates, std::vect
 	if(!candidates.size())
 		return false;
 
-	for(int index = 0; index < cpu_count; index++)
+	for(size_t index = 0; index < cpu_count; index++)
 	{
 		target_pool[index].CopyFrom(*ad1);
 		match_pool[index].ReplaceLeftAd(&(target_pool[index]));
@@ -872,27 +929,6 @@ bool ParallelIsAMatch(ClassAd *ad1, std::vector<ClassAd*> &candidates, std::vect
 				break;
 			ClassAd *ad2 = candidates[offset];
 
-/*
-			if(halfMatch)
-			{
-				char const *my_target_type = target_pool[omp_id].GetTargetTypeName();
-				char const *target_type = ad2->GetMyTypeName();
-				if( !my_target_type ) {
-					my_target_type = "";
-				}
-				if( !target_type ) {
-					target_type = "";
-				}
-				if( strcasecmp(target_type,my_target_type) &&
-					strcasecmp(my_target_type,ANY_ADTYPE) )
-				{
-					result = false;
-					continue;
-				}
-			}
-*/
-
-
 			match_pool[omp_id].ReplaceRightAd(ad2);
 		
 			if(halfMatch)
@@ -909,7 +945,7 @@ bool ParallelIsAMatch(ClassAd *ad1, std::vector<ClassAd*> &candidates, std::vect
 		}
 	}
 
-	for(int index = 0; index < cpu_count; index++)
+	for(size_t index = 0; index < cpu_count; index++)
 	{
 		match_pool[index].RemoveLeftAd();
 		matched += matched_ads[index].size();
@@ -918,7 +954,7 @@ bool ParallelIsAMatch(ClassAd *ad1, std::vector<ClassAd*> &candidates, std::vect
 	if(matches.capacity() < matched)
 		matches.reserve(matched);
 
-	for(int index = 0; index < cpu_count; index++)
+	for(size_t index = 0; index < cpu_count; index++)
 	{
 		if(matched_ads[index].size())
 			matches.insert(matches.end(), matched_ads[index].begin(), matched_ads[index].end());
@@ -927,32 +963,32 @@ bool ParallelIsAMatch(ClassAd *ad1, std::vector<ClassAd*> &candidates, std::vect
 	return matches.size() > 0;
 }
 
-bool IsAHalfMatch( ClassAd *my, ClassAd *target )
+bool IsAConstraintMatch( ClassAd *query, ClassAd *target )
 {
-		// The collector relies on this function to check the target type.
-		// Eventually, we should move that check either into the collector
-		// or into the requirements expression.
-	char const *my_target_type = GetTargetTypeName(*my);
-	char const *target_type = GetMyTypeName(*target);
-	if( !my_target_type ) {
-		my_target_type = "";
-	}
-	if( !target_type ) {
-		target_type = "";
-	}
-	if( strcasecmp(target_type,my_target_type) &&
-		strcasecmp(my_target_type,ANY_ADTYPE) )
-	{
-		return false;
-	}
-
-	classad::MatchClassAd *mad = getTheMatchAd( my, target );
+	classad::MatchClassAd *mad = getTheMatchAd( query, target );
 
 	bool result = mad->rightMatchesLeft();
 
 	releaseTheMatchAd();
 	return result;
 }
+
+bool IsATargetMatch( ClassAd *my, ClassAd *target, const char * targetType )
+{
+	// first check to see that the MyType of the target matches the desired targetType
+	if (targetType && targetType[0] && YourStringNoCase(targetType) != ANY_ADTYPE) {
+		char const *mytype_of_target = GetMyTypeName(*target);
+		if( !mytype_of_target ) {
+			mytype_of_target = "";
+		}
+		if (YourStringNoCase(targetType) != mytype_of_target) {
+			return false;
+		}
+	}
+
+	return IsAConstraintMatch(my, target);
+}
+
 
 /**************************************************************************
  *

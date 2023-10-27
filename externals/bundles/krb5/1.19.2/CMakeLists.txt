@@ -39,10 +39,9 @@ if (WITH_KRB5)
 		set (KRB5_CONFIGURE echo "No configuration necessary")
 		set (KRB5_MAKE echo "No make necessary")
 
-		# Something is wrong with the default install (make install suck-o)
-		set (KRB5_INSTALL cp -r *.lib ${KRB5_INSTALL_LOC}/lib \r\n
-			cp -r *.dll ${KRB5_INSTALL_LOC}/lib \r\n
-			cp -r include/* ${KRB5_INSTALL_LOC}/include \r\n)
+		# Something is wrong with the default install
+		set (KRB5_INSTALL ${CMAKE_COMMAND} -E copy_directory . ${KRB5_INSTALL_LOC}/lib \r\n
+				${CMAKE_COMMAND} -E copy_directory include ${KRB5_INSTALL_LOC}/include \r\n)
 
 			ExternalProject_Add(krb5
 				#-- Download Step ----------
@@ -75,6 +74,10 @@ if (WITH_KRB5)
 
 		condor_post_external( krb5 include OFF "" )
 
+	else()
+
+		find_multiple( "krb5;com_err;k5crypto;krb5support;gssapi_krb5" KRB5_FOUND )
+
 	endif( )
 
 	if( DLOPEN_SECURITY_LIBS )
@@ -88,6 +91,7 @@ if (WITH_KRB5)
 		find_so_name( LIBKRB5_SO ${LIBKRB5_PATH} )
 		find_library( LIBGSSAPI_KRB5_PATH "gssapi_krb5" )
 		find_so_name( LIBGSSAPI_KRB5_SO ${LIBGSSAPI_KRB5_PATH} )
+		message (STATUS "dlopen ${LIBCOM_ERR_PATH}, ${LIBKRB5SUPPORT_PATH}, ${LIBK5CRYPTO_PATH}, ${LIBKRB5_PATH}")
 		set( KRB5_FOUND "" )
 	endif()
 

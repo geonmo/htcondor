@@ -20,7 +20,7 @@ read the other configuration-related sections:
    configuration macros.
 -  The settings that control the policy under which HTCondor will start,
    suspend, resume, vacate or kill jobs are described in
-   the :doc:`/admin-manual/policy-configuration` section on Policy
+   the :doc:`/admin-manual/ep-policy-configuration` section on Policy
    Configuration for the *condor_startd*.
 
 HTCondor Configuration Files
@@ -76,13 +76,11 @@ is:
    files have historically been known as local configuration files);
 #. if HTCondor daemons are not running as root on Unix platforms, the
    file ``$(HOME)/.condor/user_config`` if it exists, or the file
-   defined by configuration variable ``USER_CONFIG_FILE``
-   :index:`USER_CONFIG_FILE`;
+   defined by configuration variable :macro:`USER_CONFIG_FILE`;
 
    if HTCondor daemons are not running as Local System on Windows
    platforms, the file %USERPROFILE\\.condor\\user_config if it exists,
-   or the file defined by configuration variable ``USER_CONFIG_FILE``
-   :index:`USER_CONFIG_FILE`;
+   or the file defined by configuration variable :macro:`USER_CONFIG_FILE`;
 
 #. specific environment variables whose names are prefixed with
    ``_CONDOR_`` (note that these environment variables directly define
@@ -124,14 +122,14 @@ of the same variable, and since the last definition of a variable sets
 the value, the parse order of these local configuration files is fully
 specified here. In order:
 
-#. The value of configuration variable ``LOCAL_CONFIG_DIR``
-   :index:`LOCAL_CONFIG_DIR` lists one or more directories which
+#. The value of configuration variable
+   :macro:`LOCAL_CONFIG_DIR` lists one or more directories which
    contain configuration files. The list is parsed from left to right.
    The leftmost (first) in the list is parsed first. Within each
    directory, a lexicographical ordering by file name determines the
    ordering of file consideration.
-#. The value of configuration variable ``LOCAL_CONFIG_FILE``
-   :index:`LOCAL_CONFIG_FILE` lists one or more configuration
+#. The value of configuration variable
+   :macro:`LOCAL_CONFIG_FILE` lists one or more configuration
    files. These listed files are parsed from left to right. The leftmost
    (first) in the list is parsed first.
 #. If one of these steps changes the value (right hand side) of
@@ -480,8 +478,7 @@ configuration macros. The vertical bar character (``|``) as the last
 character defining a file name provides the syntax necessary to tell
 HTCondor to run a program. This syntax may only be used in the
 definition of the ``CONDOR_CONFIG`` environment variable, or the
-``LOCAL_CONFIG_FILE`` :index:`LOCAL_CONFIG_FILE` configuration
-variable.
+:macro:`LOCAL_CONFIG_FILE` configuration variable.
 
 The command line for the program is formed by the characters preceding
 the vertical bar character. The standard output of the program is parsed
@@ -957,23 +954,24 @@ Macros That Will Require a Restart When Changed
 
 :index:`configuration change requiring a restart of HTCondor`
 
-When any of the following listed configuration variables are changed,
-HTCondor must be restarted. Reconfiguration using *condor_reconfig*
-will not be enough.
+The HTCondor daemons will generally not undo any work they have already done when the configuration changes
+so any change that would require undoing of work will require a restart before it takes effect.  There a very
+few exceptions to this rule.  The *condor_master* will pick up changes to ``DAEMON_LIST`` on a reconfig.
+Although it may take hours for a *condor_startd* to drain and exit when it is removed from the daemon list.
 
--  BIND_ALL_INTERFACES
--  FetchWorkDelay
--  MAX_NUM_CPUS
--  MAX_TRACKING_GID
--  MEMORY
--  MIN_TRACKING_GID
--  NETWORK_HOSTNAME
--  NETWORK_INTERFACE
--  NUM_CPUS
--  PREEMPTION_REQUIREMENTS_STABLE
--  PROCD_ADDRESS
--  SLOT_TYPE_<N>
--  OFFLINE_MACHINE_RESOURCE_<name>
+Examples of changes requiring a restart would any change to how HTCondor uses the network. A configuration change 
+to ``NETWORK_INTERFACE``, ``NETWORK_HOSTNAME``, ``ENABLE_IPV4`` and ``ENABLE_IPV6`` require a restart. A change in the
+way daemons locate each other, such as ``PROCD_ADDRESS``, ``BIND_ALL_INTERFACES``, ``USE_SHARED_PORT`` or ``SHARED_PORT_PORT``
+require a restart of the *condor_master* and all of the daemons under it.
+
+The *condor_startd* requires a restart to make any change to the slot resource configuration, This would include ``MEMORY``,
+``NUM_CPUS`` and ``NUM_SLOTS_TYPE_<n>``.  It would also include resource detection like GPUs and Docker support.
+A general rule of thumb is that changes to the *condor_startd* require a restart, but there are a few exceptions.
+``STARTD_ATTRS`` as well as ``START``, ``PREEMPT``, and other policy expressions take effect on reconfig.
+
+For more information about specific configuration variables and whether a restart is required, refer to the documentation
+of the individual variables.
+
 
 Pre-Defined Macros
 ------------------
@@ -1035,32 +1033,7 @@ restart of HTCondor in order to use the changed value.
     :index:`subsystem names`
     :index:`subsystem names<single: subsystem names; macro>`
 
-    -  C_GAHP
-    -  C_GAHP_WORKER_THREAD
-    -  CKPT_SERVER
-    -  COLLECTOR
-    -  DBMSD
-    -  DEFRAG
-    -  EC2_GAHP
-    -  GANGLIAD
-    -  GCE_GAHP
-    -  GRIDMANAGER
-    -  HAD
-    -  JOB_ROUTER
-    -  KBDD
-    -  LEASEMANAGER
-    -  MASTER
-    -  NEGOTIATOR
-    -  REPLICATION
-    -  ROOSTER
-    -  SCHEDD
-    -  SHADOW
-    -  SHARED_PORT
-    -  STARTD
-    -  STARTER
-    -  SUBMIT
-    -  TOOL
-    -  TRANSFERER
+    .. include:: subsystems.rst
 
 ``$(DETECTED_CPUS)`` :index:`DETECTED_CPUS`
     The integer number of hyper-threaded CPUs, as given by
@@ -1147,6 +1120,13 @@ determined automatically at run time but which can be overwritten.
     Defaults to the fully qualified host name of the machine it is
     evaluated on. See the :doc:`/admin-manual/configuration-macros` section for the full
     description of this configuration variable.
+
+``$(CONFIG_ROOT)`` :index:`CONFIG_ROOT`
+   Set to the directory where the the main config file will be read prior to reading any 
+   config files. The value will usually be ``/etc/condor`` for an RPM install,
+   ``C:\Condor`` for a Windows MSI install and the directory part of the ``CONDOR_CONFIG`` environment
+   variable for a tarball install. This variable will not be set when ``CONDOR_CONFIG`` is
+   set to ``ONLY_ENV`` so that no configuration files are read.
 
 Since ``$(ARCH)`` and ``$(OPSYS)`` will automatically be set to the
 correct values, we recommend that you do not overwrite them.

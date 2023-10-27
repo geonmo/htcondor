@@ -151,7 +151,7 @@ void
 handleAll()
 {
 	char constraint[128];
-	sprintf( constraint, "%s >= 0", ATTR_CLUSTER_ID );
+	snprintf( constraint, sizeof(constraint), "%s >= 0", ATTR_CLUSTER_ID );
 
 	addConstraint(constraint);
 }
@@ -236,8 +236,9 @@ main(int argc, char *argv[])
 						exit( 1 );
 					}
 					break;
+				} else {
+					All = true;
 				}
-				All = true;
 				break;
 			case 'n': 
 				// use the given name as the schedd name to connect to

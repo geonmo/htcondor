@@ -27,10 +27,10 @@
 #include "env.h"
 #include "setenv.h"
 
-#ifdef WIN32
-#else
+#ifndef WIN32
 #include <poll.h>
 #include <fcntl.h>
+#include <unistd.h>
 #endif
 
 #ifdef WIN32
@@ -249,8 +249,8 @@ my_popen(const ArgList &args, const char *mode, int want_stderr, const Env *zkmE
 	/* drop_privs HAS NO EFFECT ON WINDOWS */
 	/* write_data IS NOT YET IMPLEMENTED ON WINDOWS - we can do so when we need it */
 
-	MyString cmdline;
-	if (!args.GetArgsStringWin32(&cmdline, 0)) {
+	std::string cmdline;
+	if (!args.GetArgsStringWin32(cmdline, 0)) {
 		dprintf(D_ALWAYS, "my_popen: error making command line\n");
 		return NULL;
 	}
@@ -259,7 +259,7 @@ my_popen(const ArgList &args, const char *mode, int want_stderr, const Env *zkmE
 		return NULL;
 	}
 	//  maybe the following function should be extended by an Env* argument? Not sure...
-	return my_popen(cmdline.Value(), mode, want_stderr);
+	return my_popen(cmdline.c_str(), mode, want_stderr);
 }
 
 FILE *
@@ -310,6 +310,15 @@ my_pclose_ex(FILE *fp, unsigned int timeout, bool kill_after_timeout)
 int my_pclose( FILE *fp )
 {
 	int rv = my_pclose_ex(fp, 0xFFFFFFFF, false);
+	if (rv == MYPCLOSE_EX_NO_SUCH_FP || rv == MYPCLOSE_EX_I_KILLED_IT || rv == MYPCLOSE_EX_STATUS_UNKNOWN) {
+		rv = -1; // set a backward compatible exit status.
+	}
+	return rv;
+}
+
+int
+my_pclose( FILE *fp, unsigned int timeout, bool kill_after_timeout ) {
+	int rv = my_pclose_ex(fp, timeout, kill_after_timeout );
 	if (rv == MYPCLOSE_EX_NO_SUCH_FP || rv == MYPCLOSE_EX_I_KILLED_IT || rv == MYPCLOSE_EX_STATUS_UNKNOWN) {
 		rv = -1; // set a backward compatible exit status.
 	}
@@ -532,7 +541,7 @@ my_popenv_impl( const char *const args[],
 		sigfillset(&sigs);
 		sigprocmask(SIG_UNBLOCK, &sigs, NULL);
 
-		MyString cmd = args[0];
+		std::string cmd = args[0];
 
 			/* set environment if defined */
 		if (env_ptr) {
@@ -697,14 +706,22 @@ static bool waitpid_with_timeout(pid_t pid, int *pstatus, time_t timeout)
 			return true;
 		}
 		time_t now = time(NULL);
-		if ((now - begin_time) > timeout) {
+		if ((now - begin_time) >= timeout) {
 			return false;
 		}
-		sleep(1);
+		usleep(10);
 	}
 	return false;
 }
 
+int
+my_pclose( FILE *fp, unsigned int timeout, bool kill_after_timeout ) {
+	int rv = my_pclose_ex(fp, timeout, kill_after_timeout );
+	if (rv == MYPCLOSE_EX_NO_SUCH_FP || rv == MYPCLOSE_EX_I_KILLED_IT || rv == MYPCLOSE_EX_STATUS_UNKNOWN) {
+		rv = -1; // set a backward compatible exit status.
+	}
+	return rv;
+}
 
 int
 my_pclose_ex(FILE *fp, unsigned int timeout, bool kill_after_timeout)
@@ -942,7 +959,7 @@ int MyPopenTimer::start_program (
 	bool drop_privs /*=true*/,
 	const char * stdin_data /*=NULL*/)
 {
-	if (fp) return -1;
+	if (fp) { return ALREADY_RUNNING; }
 
 	//src.clear();
 	status = 0;

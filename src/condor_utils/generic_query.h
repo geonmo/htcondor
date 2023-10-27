@@ -22,7 +22,6 @@
 
 #include "condor_classad.h"
 #include "list.h"
-#include "simplelist.h"
 #include "query_result_type.h"	
 
 class GenericQuery
@@ -44,6 +43,11 @@ class GenericQuery
 	int addFloat (const int, float);
 	int addCustomOR (const char *);
 	int addCustomAND( const char * );
+
+	bool hasString(const int cat, const char * value);
+	bool hasStringNoCase(const int cat, const char * value);
+	bool hasCustomOR(const char * value) { return hasItem(customORConstraints, value); }
+	bool hasCustomAND(const char * value) { return hasItem(customANDConstraints, value); }
 
 	// clear constraints
 	int clearInteger (const int);
@@ -77,8 +81,8 @@ class GenericQuery
 	char * const *floatKeywordList;
 
 	// pointers to store the arrays of Lists neessary to store the constraints
-	SimpleList<int>   *integerConstraints;
-	SimpleList<float> *floatConstraints;
+	std::vector<int>   *integerConstraints;
+	std::vector<float> *floatConstraints;
 	List<char> 		  *stringConstraints;
 	List<char> 		  customORConstraints;
 	List<char> 		  customANDConstraints;
@@ -86,12 +90,24 @@ class GenericQuery
 	// helper functions
 	void clearQueryObject     (void);
     void clearStringCategory  (List<char> &);
-    void clearIntegerCategory (SimpleList<int> &);
-    void clearFloatCategory   (SimpleList<float> &);
+    void clearIntegerCategory (std::vector<int> &);
+    void clearFloatCategory   (std::vector<float> &);
     void copyQueryObject      (const GenericQuery &);
     void copyStringCategory   (List<char> &, List<char> &);
-    void copyIntegerCategory  (SimpleList<int> &, SimpleList<int> &);
-    void copyFloatCategory    (SimpleList<float>&, SimpleList<float>&);
+    void copyIntegerCategory  (std::vector<int> &, std::vector<int> &);
+    void copyFloatCategory    (std::vector<float>&, std::vector<float>&);
+	bool hasItem(List<char>& lst, const char * value) {
+		for (YourString item = lst.First(); ! item.empty(); item = lst.Next()) {
+			if (item == value) return true;
+		}
+		return false;
+	}
+	bool hasItemNoCase(List<char>& lst, const char * value) {
+		for (YourStringNoCase item = lst.First(); ! item.empty(); item = lst.Next()) {
+			if (item == value) return true;
+		}
+		return false;
+	}
 };
 
 #endif

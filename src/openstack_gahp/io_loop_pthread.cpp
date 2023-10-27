@@ -26,13 +26,13 @@
 #include "condor_config.h"
 #include "condor_debug.h"
 #include "string_list.h"
-#include "HashTable.h"
 #include "PipeBuffer.h"
 #include "my_getopt.h"
 #include "io_loop_pthread.h"
 #include "openstackgahp_common.h"
 #include "openstackCommands.h"
 #include "subsystem_info.h"
+#include <algorithm>
 
 #define OPENSTACK_GAHP_VERSION	"0.1"
 
@@ -274,13 +274,10 @@ Worker::Worker(int worker_id)
 
 Worker::~Worker()
 {
-	Request *request = NULL;
-
-	m_request_list.Rewind();
-	while( m_request_list.Next(request) ) {
-		m_request_list.DeleteCurrent();
+	for (auto request : m_request_list) {
 		delete request;
 	}
+	m_request_list.clear();
 
 	pthread_cond_destroy(&m_cond);
 }
@@ -288,20 +285,25 @@ Worker::~Worker()
 bool
 Worker::removeRequest(int req_id)
 {
-	Request *request = NULL;
-
-	m_request_list.Rewind();
-	while( m_request_list.Next(request) ) {
-
-		if( request->m_reqid == req_id ) {
-			// remove this request from worker request queue
-			m_request_list.DeleteCurrent();
-			delete request;
+	auto delete_matched = [req_id](const Request *r) {
+		if (r->m_reqid == req_id) {
+			delete r;
 			return true;
+		} else {
+			return false;
 		}
-	}
+	};
 
-	return false;
+	// Assume only one matches
+	auto it = std::remove_if(m_request_list.begin(), m_request_list.end(),
+			delete_matched);
+
+	if (it == m_request_list.end()) {
+		return false; // not found
+	} else {
+		m_request_list.erase(it);
+		return true;
+	}
 }
 
 
@@ -319,7 +321,6 @@ Request::Request (const char *cmd)
 
 // Functions for IOProcess class
 IOProcess::IOProcess()
-	: m_workers_list(&hashFuncInt)
 {
 	m_async_mode = false;
 	m_new_results_signaled = false;
@@ -459,72 +460,47 @@ IOProcess::stdinPipeHandler()
 Worker*
 IOProcess::createNewWorker(void)
 {
-	Worker *new_worker = NULL;
-	new_worker = new Worker(newWorkerId());
+	int new_id = newWorkerId();
+	auto [it, success] = m_workers_list.insert({new_id, Worker(new_id)});
+	ASSERT(success);
+	Worker& new_worker = it->second;
 
 	dprintf (D_FULLDEBUG, "About to start a new thread\n");
 
 	// Create pthread
 	pthread_t thread;
 	if( pthread_create(&thread, NULL,
-				worker_function, (void *)new_worker) !=  0 ) {
+				worker_function, (void *)&new_worker) !=  0 ) {
 		dprintf(D_ALWAYS, "Failed to create a new thread\n");
 
-		delete new_worker;
-		return NULL;
+		m_workers_list.erase(it);
+		return nullptr;
 	}
 
 	// Deatch this thread
 	pthread_detach(thread);
 
-	// Insert a new worker to HashTable
-	ASSERT( m_workers_list.insert(new_worker->m_id, new_worker) == 0 );
 	m_avail_workers_num++;
 
-	dprintf(D_FULLDEBUG, "New Worker[id=%d] is created!\n", new_worker->m_id);
-	return new_worker;
+	dprintf(D_FULLDEBUG, "New Worker[id=%d] is created!\n", new_worker.m_id);
+	return &new_worker;
 }
 
 Worker*
 IOProcess::findFreeWorker(void)
 {
-	int currentkey = 0;
-	Worker *worker = NULL;
-
-	m_workers_list.startIterations();
-	while( m_workers_list.iterate(currentkey, worker) != 0 ) {
-
-
-		if( !worker->m_is_doing ) {
-
-			return worker;
+	for (auto& [key, worker]: m_workers_list) {
+		if (!worker.m_is_doing) {
+			return &worker;
 		}
-
 	}
-	return NULL;
-}
-
-Worker*
-IOProcess::findWorker(int id)
-{
-	Worker *worker = NULL;
-
-	m_workers_list.lookup(id, worker);
-	return worker;
+	return nullptr;
 }
 
 bool
 IOProcess::removeWorkerFromWorkerList(int id)
 {
-	Worker* worker = findWorker(id);
-	if( worker ) {
-		m_workers_list.remove(id);
-
-		delete worker;
-		return true;
-	}
-
-	return false;
+	return (m_workers_list.erase(id) > 0);
 }
 
 Request*
@@ -574,11 +550,10 @@ IOProcess::addResult(const char *result)
 int
 IOProcess::newWorkerId(void)
 {
-	Worker* unused = NULL;
 	int starting_worker_id = m_next_worker_id++;
 
 	while( starting_worker_id != m_next_worker_id ) {
-		if( m_next_worker_id > 990000000 ) {
+		if( m_next_worker_id > 990'000'000 ) {
 			m_next_worker_id = 1;
 			m_rotated_worker_ids = true;
 		}
@@ -588,7 +563,7 @@ IOProcess::newWorkerId(void)
 		}
 
 		// Make certain this worker_id is not already in use
-		if( m_workers_list.lookup(m_next_worker_id, unused) == -1 ) {
+		if (m_workers_list.find(m_next_worker_id) == m_workers_list.end()) {
 			// not in use, we are done
 			return m_next_worker_id;
 		}
@@ -613,7 +588,7 @@ IOProcess::addRequestToWorker(Request* request, Worker* worker)
 				request->m_raw_cmd.c_str(), worker->m_id);
 
 		request->m_worker = worker;
-		worker->m_request_list.Append(request);
+		worker->m_request_list.push_back(request);
 		worker->m_is_doing = true;
 
 		if( worker->m_is_waiting ) {
@@ -626,7 +601,7 @@ IOProcess::addRequestToWorker(Request* request, Worker* worker)
 		dprintf (D_FULLDEBUG, "Appending %s to global pending request list\n",
 				request->m_raw_cmd.c_str());
 
-		m_pending_req_list.Append(request);
+		m_pending_req_list.push_back(request);
 	}
 }
 
@@ -634,7 +609,7 @@ int
 IOProcess::numOfPendingRequest(void)
 {
 	int num = 0;
-	num = m_pending_req_list.Number();
+	num = (int) m_pending_req_list.size();
 
 	return num;
 }
@@ -642,31 +617,27 @@ IOProcess::numOfPendingRequest(void)
 Request*
 IOProcess::popPendingRequest(void)
 {
-	Request *new_request = NULL;
-
-	m_pending_req_list.Rewind();
-	m_pending_req_list.Next(new_request);
-	if( new_request ) {
-		m_pending_req_list.DeleteCurrent();
+	if (m_pending_req_list.empty()) {
+		return nullptr;
+	} else {
+		Request *new_request = m_pending_req_list.front();
+		m_pending_req_list.erase(m_pending_req_list.begin());
+		return new_request;
 	}
-
-	return new_request;
 }
 
 Request* popRequest(Worker* worker)
 {
-	Request *new_request = NULL;
+	Request *new_request = nullptr;
 	if( !worker ) {
-		return NULL;
+		return nullptr;
 	}
 
-	worker->m_request_list.Rewind();
-	worker->m_request_list.Next(new_request);
-
-	if( new_request ) {
+	if (!worker->m_request_list.empty()) {
 		// Remove this request from worker request queue
-		worker->m_request_list.DeleteCurrent();
-	}else {
+		new_request = worker->m_request_list.front();
+		worker->m_request_list.erase(worker->m_request_list.begin());
+	} else {
 		new_request = ioprocess.popPendingRequest();
 
 		if( new_request ) {

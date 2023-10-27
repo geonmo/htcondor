@@ -48,7 +48,7 @@ class CondorResource : public BaseResource
 	void CondorRegisterJob( CondorJob *job, const char *submitter_id );
 	void UnregisterJob( BaseJob *job );
 
-	void DoScheddPoll();
+	void DoScheddPoll(int timerID);
 
 	static std::string & HashName( const char *resource_name,
 	                             const char *pool_name,
@@ -61,7 +61,7 @@ class CondorResource : public BaseResource
 
 	static bool GahpErrorResourceDown( const char *errmsg );
 
-	StringList submitter_ids;
+	std::vector<std::string> submitter_ids;
 	std::string submitter_constraint;
 	int scheddPollTid;
 	char *scheddName;
@@ -78,9 +78,9 @@ class CondorResource : public BaseResource
 	struct ScheddPollInfo {
 		time_t m_lastPoll;
 		bool m_pollActive;
-		List<CondorJob> m_submittedJobs;
+		std::vector<CondorJob*> m_submittedJobs;
 	};
-	static HashTable <std::string, ScheddPollInfo *> PollInfoByName;
+	static std::map<std::string, ScheddPollInfo *> PollInfoByName;
 
 	const char *GetHashName();
 
@@ -91,7 +91,7 @@ class CondorResource : public BaseResource
 				 bool& ping_succeeded );
 
 	void DoUpdateLeases( unsigned& update_delay, bool& update_complete,
-						 SimpleList<PROC_ID>& update_succeeded );
+	                     std::vector<PROC_ID>& update_succeeded );
 
 	GahpClient *gahp;
 	GahpClient *ping_gahp;

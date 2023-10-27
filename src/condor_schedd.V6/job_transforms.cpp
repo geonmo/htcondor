@@ -25,9 +25,9 @@
 #include "qmgmt.h"
 #include "condor_qmgr.h"
 
-JobTransforms::JobTransforms()
+JobTransforms::JobTransforms() : mset_ckpt(NULL)
 {
-	mset_ckpt = NULL;
+	
 }
 
 JobTransforms::~JobTransforms()
@@ -38,18 +38,16 @@ JobTransforms::~JobTransforms()
 void
 JobTransforms::clear_transforms_list()
 {
-	MacroStreamXFormSource *xfm = NULL;
-	transforms_list.Rewind();
-	while ( transforms_list.Next( xfm ) ) {
+	for (MacroStreamXFormSource *xfm : transforms_list) {
 		delete xfm;
 	}
-	transforms_list.Clear();
+	transforms_list.clear();
 }
 
 void 
 JobTransforms::initAndReconfig()
 {
-	int rval;
+	int rval = 0;
 
 	// Setup xform_utils hashtable, and record a ckpt
 	mset.clear();
@@ -67,9 +65,9 @@ JobTransforms::initAndReconfig()
 	}
 	StringList nameList( jobtransNames.c_str() );
 	nameList.rewind();
-	const char * name = NULL;
-	MacroStreamXFormSource *xfm = NULL;
-	while( (name = nameList.next()) != NULL ) {
+	const char * name = nullptr;
+	MacroStreamXFormSource *xfm = nullptr;
+	while( (name = nameList.next()) != nullptr ) {
 
 		if( strcasecmp( name, "NAMES" ) == 0 ) { continue; }  // prevent recursion!
 		std::string attributeName;
@@ -136,12 +134,12 @@ JobTransforms::initAndReconfig()
 		// TODO
 
 		// Finally, append the xfm to the end our list (order is important here!)
-		transforms_list.Append(xfm);
+		transforms_list.push_back(xfm);
 		std::string xfm_text;
 		dprintf(D_ALWAYS, 
-			"JOB_TRANSFORM_%s setup as transform rule #%d :\n%s\n",
-			name, transforms_list.Number(), xfm->getFormattedText(xfm_text, "\t") );
-		xfm = NULL;  // we handed the xfm pointer off to our list
+			"JOB_TRANSFORM_%s setup as transform rule #%zu :\n%s\n",
+			name, transforms_list.size(), xfm->getFormattedText(xfm_text, "\t") );
+		xfm = nullptr;  // we handed the xfm pointer off to our list
 
 	} // end of while loop thru job transform names	
 	if (xfm) delete xfm; 
@@ -152,12 +150,13 @@ JobTransforms::transformJob(
 	ClassAd *ad,
 	const PROC_ID & jid, // the ad transforms will be written to. (may differ from the ad being transformed)
 	classad::References * xform_attrs,
-	CondorError * /* errorStack */ )
+	CondorError * /* errorStack */,
+	bool is_late_mat /*= false*/)
 {
 	int transforms_applied = 0;
 	int transforms_considered = 0;
 	StringList attrs_changed;
-	int rval;
+	int rval = 0;
 	std::string errmsg;
 	std::string applied_names;
 
@@ -168,7 +167,7 @@ JobTransforms::transformJob(
 
 	// Revert variables hashtable so it doesn't grow idefinitely
 	mset.rewind_to_state(mset_ckpt, false);
-	mset.set_iterate_step(jid.proc, jid.cluster); // make ids visible to transform as temp variables
+	mset.set_factory_vars(jid.proc < 0, is_late_mat); // make ids visible to transform as temp variables
 
 	// Enable dirty tracking of ad attributes and mark them as clean,
 	// since after the transform we need to discover which attributes changed.
@@ -176,9 +175,7 @@ JobTransforms::transformJob(
 	ad->ClearAllDirtyFlags();
 
 	// Apply our ordered list of transforms to the ad, changing it in-place.
-	MacroStreamXFormSource *xfm = NULL;
-	transforms_list.Rewind();
-	while ( transforms_list.Next( xfm ) ) {
+	for (MacroStreamXFormSource *xfm : transforms_list) {
 	
 		transforms_considered++;
 
@@ -236,18 +233,18 @@ int
 JobTransforms::set_dirty_attributes(ClassAd *ad, int cluster, int proc, classad::References * attrs /*=nullptr*/)
 {
 	int num_attrs_set = 0;
-	const char *rhstr = 0;
-	ExprTree * tree;
+	const char *rhstr = nullptr;
+	ExprTree * tree = nullptr;
 
 	// make sure we don't write the ProdId attribute here
 	// If we are setting dirty attributes into a cluster ad it would be a fatal
 	// and for a proc ad, it is unnecessary
 	ad->MarkAttributeClean(ATTR_PROC_ID);
 
-	for ( classad::ClassAd::dirtyIterator it = ad->dirtyBegin();
+	for ( auto it = ad->dirtyBegin();
 		  it != ad->dirtyEnd(); ++it ) 
 	{
-		rhstr = NULL;
+		rhstr = nullptr;
 		tree = ad->Lookup( *it );
 		if ( tree ) {
 			rhstr = ExprTreeToString( tree );

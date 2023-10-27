@@ -24,7 +24,6 @@
 #include "condor_daemon_core.h"
 #include "spooled_job_files.h"
 #include "condor_config.h"
-#include "HashTable.h"
 #include "util_lib_proto.h"
 #include "env.h"
 #include "directory.h"
@@ -38,10 +37,12 @@
 #include "gridmanager.h"
 
 #include <sstream>
+#include <algorithm>
+#include <map>
 
 
-HashTable <std::string, Proxy *> ProxiesByFilename( hashFunction );
-HashTable <std::string, ProxySubject *> SubjectsByName( hashFunction );
+std::map<std::string, Proxy *> ProxiesByFilename;
+std::map<std::string, ProxySubject *> SubjectsByName;
 
 static bool proxymanager_initialized = false;
 static int CheckProxies_tid = TIMER_UNSET;
@@ -52,7 +53,7 @@ int minProxy_time = 3 * 60;				// default value
 
 static int next_proxy_id = 1;
 
-void CheckProxies();
+void CheckProxies(int tid);
 
 static bool
 SetMasterProxy( Proxy *master, const Proxy *copy_src )
@@ -77,9 +78,7 @@ SetMasterProxy( Proxy *master, const Proxy *copy_src )
 	master->expiration_time = copy_src->expiration_time;
 	master->near_expired = copy_src->near_expired;
 
-	Callback cb;
-	master->m_callbacks.Rewind();
-	while ( master->m_callbacks.Next( cb ) ) {
+	for (Callback cb: master->m_callbacks) {
 		((cb.m_data)->*(cb.m_func_ptr))();
 	}
 
@@ -139,14 +138,14 @@ void ReconfigProxyManager()
 // string in the error parameter and return NULL.
 Proxy *
 AcquireProxy( const ClassAd *job_ad, std::string &error,
-			  TimerHandlercpp func_ptr, Service *data  )
+			  CallbackType func_ptr, Service *data  )
 {
 	if ( proxymanager_initialized == false ) {
 		error = "Internal Error: ProxyManager not initialized";
 		return NULL;
 	}
 
-	int expire_time;
+	time_t expire_time;
 	Proxy *proxy = NULL;
 	ProxySubject *proxy_subject = NULL;
 	char *subject_name = NULL;
@@ -175,7 +174,9 @@ AcquireProxy( const ClassAd *job_ad, std::string &error,
 		}
 	}
 
-	if ( ProxiesByFilename.lookup( proxy_path, proxy ) == 0 ) {
+	auto it = ProxiesByFilename.find(proxy_path);
+	if (it != ProxiesByFilename.end()) {
+		proxy = it->second;
 		// We already know about this proxy,
 		// use the existing Proxy struct
 		proxy->num_references++;
@@ -183,8 +184,10 @@ AcquireProxy( const ClassAd *job_ad, std::string &error,
 			Callback cb;
 			cb.m_func_ptr = func_ptr;
 			cb.m_data = data;
-			if ( proxy->m_callbacks.IsMember( cb ) == false ) {
-				proxy->m_callbacks.Append( cb );
+			if (proxy->m_callbacks.end() == 
+					std::find(proxy->m_callbacks.begin(),
+						proxy->m_callbacks.end(), cb)) {
+				proxy->m_callbacks.push_back( cb );
 			}
 		}
 		return proxy;
@@ -240,14 +243,19 @@ AcquireProxy( const ClassAd *job_ad, std::string &error,
 			Callback cb;
 			cb.m_func_ptr = func_ptr;
 			cb.m_data = data;
-			if ( proxy->m_callbacks.IsMember( cb ) == false ) {
-				proxy->m_callbacks.Append( cb );
+			if (proxy->m_callbacks.end() == 
+					std::find(proxy->m_callbacks.begin(),
+						proxy->m_callbacks.end(), cb)) {
+				proxy->m_callbacks.push_back( cb );
 			}
 		}
 
-		ProxiesByFilename.insert(proxy_path, proxy);
+		ProxiesByFilename[proxy_path] = proxy;
 
-		if ( SubjectsByName.lookup( fqan, proxy_subject ) != 0 ) {
+		auto it = SubjectsByName.find(fqan);
+		if (it != SubjectsByName.end()) {
+			proxy_subject = it->second;
+		} else {
 			// We don't know about this proxy subject yet,
 			// create a new ProxySubject and fill it out
 			std::string tmp;
@@ -267,16 +275,14 @@ AcquireProxy( const ClassAd *job_ad, std::string &error,
 			new_master->num_references = 0;
 			new_master->subject = proxy_subject;
 			SetMasterProxy( new_master, proxy );
-			ASSERT( ProxiesByFilename.insert( new_master->proxy_filename,
-			                                  new_master ) == 0 );
+			ProxiesByFilename[new_master->proxy_filename] = new_master;
 
 			proxy_subject->master_proxy = new_master;
 
-			SubjectsByName.insert(proxy_subject->fqan,
-								  proxy_subject);
+			SubjectsByName[proxy_subject->fqan] = proxy_subject;
 		}
 
-		proxy_subject->proxies.Append( proxy );
+		proxy_subject->proxies.push_back(proxy);
 
 		proxy->subject = proxy_subject;
 
@@ -296,15 +302,17 @@ AcquireProxy( const ClassAd *job_ad, std::string &error,
 }
 
 Proxy *
-AcquireProxy( Proxy *proxy, TimerHandlercpp func_ptr, Service *data )
+AcquireProxy( Proxy *proxy, CallbackType func_ptr, Service *data )
 {
 	proxy->num_references++;
 	if ( func_ptr ) {
 		Callback cb;
 		cb.m_func_ptr = func_ptr;
 		cb.m_data = data;
-		if ( proxy->m_callbacks.IsMember( cb ) == false ) {
-			proxy->m_callbacks.Append( cb );
+		if (proxy->m_callbacks.end() == 
+				std::find(proxy->m_callbacks.begin(),
+					proxy->m_callbacks.end(), cb)) {
+			proxy->m_callbacks.push_back( cb );
 		}
 	}
 	return proxy;
@@ -315,7 +323,7 @@ AcquireProxy( Proxy *proxy, TimerHandlercpp func_ptr, Service *data )
 // ProxyManager code will take care of that for you. If you provided a
 // notify_tid to AcquireProxy(), provide it again here.
 void
-ReleaseProxy( Proxy *proxy, TimerHandlercpp func_ptr, Service *data )
+ReleaseProxy( Proxy *proxy, CallbackType func_ptr, Service *data )
 {
 	if ( proxymanager_initialized == false || proxy == NULL ) {
 		return;
@@ -326,7 +334,10 @@ ReleaseProxy( Proxy *proxy, TimerHandlercpp func_ptr, Service *data )
 		Callback cb;
 		cb.m_func_ptr = func_ptr;
 		cb.m_data = data;
-		proxy->m_callbacks.Delete( cb );
+		auto it = std::find(proxy->m_callbacks.begin(), proxy->m_callbacks.end(), cb);
+		if (it != proxy->m_callbacks.end()) {
+			proxy->m_callbacks.erase(it);
+		}
 	}
 
 	if ( proxy->num_references < 0 ) {
@@ -343,16 +354,16 @@ ReleaseProxy( Proxy *proxy, TimerHandlercpp func_ptr, Service *data )
 		}
 
 			// TODO should this be moved into DeleteProxy()?
-		if ( proxy_subject->proxies.IsEmpty() &&
+		if ( proxy_subject->proxies.empty() &&
 			 proxy_subject->master_proxy->num_references <= 0 ) {
 
 			// TODO shouldn't we be deleting the physical file for the
 			//   master proxy, since we created it?
-			ProxiesByFilename.remove( proxy_subject->master_proxy->proxy_filename );
+			ProxiesByFilename.erase(proxy_subject->master_proxy->proxy_filename);
 			free( proxy_subject->master_proxy->proxy_filename );
 			delete proxy_subject->master_proxy;
 
-			SubjectsByName.remove( proxy_subject->fqan );
+			SubjectsByName.erase(proxy_subject->fqan);
 			free( proxy_subject->subject_name );
 			if ( proxy_subject->email )
 				free( proxy_subject->email );
@@ -368,9 +379,9 @@ ReleaseProxy( Proxy *proxy, TimerHandlercpp func_ptr, Service *data )
 // Utility function to deep-delete the Proxy data structure
 void DeleteProxy (Proxy *& proxy)
 {
-	ProxiesByFilename.remove( proxy->proxy_filename );
+	ProxiesByFilename.erase(proxy->proxy_filename);
 
-	proxy->subject->proxies.Delete( proxy );
+	std::erase(proxy->subject->proxies, proxy);
 
 	if (proxy->proxy_filename) {
 		free( proxy->proxy_filename );
@@ -389,26 +400,20 @@ void doCheckProxies()
 // This function is called
 // periodically to check for updated proxies. It can be called earlier
 // if a proxy is about to expire.
-void CheckProxies()
+void CheckProxies(int /* tid */)
 {
-	int now = time(NULL);
-	int next_check = CheckProxies_interval + now;
-	ProxySubject *curr_subject;
+	time_t now = time(NULL);
+	time_t next_check = CheckProxies_interval + now;
 
 	dprintf( D_FULLDEBUG, "Checking proxies\n" );
 
-	SubjectsByName.startIterations();
+	for (auto& [key, curr_subject]: SubjectsByName) {
 
-	while ( SubjectsByName.iterate( curr_subject ) != 0 ) {
-
-		Proxy *curr_proxy;
 		Proxy *new_master = curr_subject->master_proxy;
 
-		curr_subject->proxies.Rewind();
+		for (auto curr_proxy: curr_subject->proxies) {
 
-		while ( curr_subject->proxies.Next( curr_proxy ) != false ) {
-
-			int new_expiration =
+			time_t new_expiration =
 				x509_proxy_expiration_time( curr_proxy->proxy_filename );
 
 			curr_proxy->near_expired =
@@ -421,9 +426,7 @@ void CheckProxies()
 				curr_proxy->near_expired =
 					(curr_proxy->expiration_time - now) <= minProxy_time;
 
-				Callback cb;
-				curr_proxy->m_callbacks.Rewind();
-				while ( curr_proxy->m_callbacks.Next( cb ) ) {
+				for (Callback cb: curr_proxy->m_callbacks) {
 					((cb.m_data)->*(cb.m_func_ptr))();
 				}
 
@@ -433,9 +436,7 @@ void CheckProxies()
 
 			} else if ( curr_proxy->near_expired ) {
 
-				Callback cb;
-				curr_proxy->m_callbacks.Rewind();
-				while ( curr_proxy->m_callbacks.Next( cb ) ) {
+				for (Callback cb: curr_proxy->m_callbacks) {
 					((cb.m_data)->*(cb.m_func_ptr))();
 				}
 			}

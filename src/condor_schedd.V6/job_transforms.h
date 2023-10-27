@@ -21,7 +21,7 @@
 #define _CONDOR_JOB_TRANSFORMS_H
 
 #include "xform_utils.h"
-#include "simplelist.h"
+#include <vector>
 
 class JobTransforms {
  public:
@@ -34,12 +34,13 @@ class JobTransforms {
 		ClassAd *ad,
 		const PROC_ID & jid,
 		classad::References * xform_attrs,
-		CondorError *errorStack);
+		CondorError *errorStack,
+		bool is_late_mat = false);
 
-	bool shouldTransform() { return !transforms_list.IsEmpty(); }
+	bool shouldTransform() { return !transforms_list.empty(); }
 
  private:
-	SimpleList<MacroStreamXFormSource *> transforms_list;
+	std::vector<MacroStreamXFormSource *> transforms_list;
 	XFormHash mset;
 	MACRO_SET_CHECKPOINT_HDR * mset_ckpt;
 

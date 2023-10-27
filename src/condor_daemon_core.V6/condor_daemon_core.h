@@ -42,7 +42,6 @@
 #include "condor_secman.h"
 #include "KeyCache.h"
 #include "list.h"
-#include "extArray.h"
 #include "MapFile.h"
 #ifdef WIN32
 #include "ntsysinfo.WINDOWS.h"
@@ -74,7 +73,6 @@ class ProcFamilyInterface;
 
 #define DEBUG_SETTABLE_ATTR_LISTS 0
 
-template <class Key, class Value> class HashTable; // forward declaration
 class Probe;
 
 #define USE_MIRON_PROBE_FOR_DC_RUNTIME_STATS
@@ -88,7 +86,7 @@ static const int MAX_SOCKS_INHERITED = 4;
    Magic fd to include in the 'std' array argument to Create_Process()
    which means you want a pipe automatically created and handled.
    If you do this to stdin, you get a writeable pipe end (exposed as a FILE*
-   Write pipes created like this are stored as MyString objects, which
+   Write pipes created like this are stored as string objects, which
    you can access via the Get_Pipe_Data() call.
 */
 static const int DC_STD_FD_PIPE = -10;
@@ -196,6 +194,8 @@ const int DCJOBOPT_NO_CONDOR_ENV_INHERIT = (1<<5);   // do not pass CONDOR_INHER
 const int DCJOBOPT_USE_SYSTEMD_INET_SOCKET = (1<<6);	     // Pass the reli sock from systemd as the command socket.
 const int DCJOBOPT_INHERIT_FAMILY_SESSION = (1<<7);
 
+const int DC_STATUS_OOM_KILLED = (1 << 24);
+
 #define HAS_DCJOBOPT_SUSPEND_ON_EXEC(mask)  ((mask)&DCJOBOPT_SUSPEND_ON_EXEC)
 #define HAS_DCJOBOPT_NO_ENV_INHERIT(mask)  ((mask)&DCJOBOPT_NO_ENV_INHERIT)
 #define HAS_DCJOBOPT_ENV_INHERIT(mask)  (!(HAS_DCJOBOPT_NO_ENV_INHERIT(mask)))
@@ -209,23 +209,17 @@ const int DCJOBOPT_INHERIT_FAMILY_SESSION = (1<<7);
 // families
 struct FamilyInfo {
 
-	int max_snapshot_interval;
-	const char* login;
+	int max_snapshot_interval{-1};
+	const char* login{nullptr};
 #if defined(LINUX)
-	gid_t* group_ptr;
+	gid_t* group_ptr{nullptr};
 #endif
-	bool want_pid_namespace;
-	const char* cgroup;
+	bool want_pid_namespace{false};
+	const char* cgroup{nullptr};
+	uint64_t cgroup_memory_limit{0};
+	int cgroup_cpu_shares{0};
 
-	FamilyInfo() {
-		max_snapshot_interval = -1;
-		login = NULL;
-#if defined(LINUX)
-		group_ptr = NULL;
-#endif
-		want_pid_namespace = false;
-		cgroup = NULL;
-	}
+	FamilyInfo() = default;
 };
 
 // Create_Process takes a sigset_t* as an argument for the signal mask to be
@@ -399,6 +393,7 @@ class OptionalCreateProcessArgs {
     OptionalCreateProcessArgs & daemonSock(const char * daemon_sock) { this->daemon_sock = daemon_sock; return *this; }
     OptionalCreateProcessArgs & remap(FilesystemRemap * fsr) { this->_remap = fsr; return *this; }
     OptionalCreateProcessArgs & asHardLimit(long ahl) { this->as_hard_limit = ahl; return *this; }
+    OptionalCreateProcessArgs & reaperID(int ri) { this->reaper_id = ri; return *this; }
 
 
     // Special case for usability; may be a bad idea, but allows you to
@@ -462,7 +457,7 @@ class DaemonCore : public Service
 	 * of daemon_core_main.C.
 	 */
     DaemonCore (int ComSize = 0, int SigSize = 0,
-                int SocSize = 0, int ReapSize = 0, int PipeSize = 0);
+                int SocSize = 0, int ReapSize = 0);
     ~DaemonCore();
     void Driver();
 
@@ -472,7 +467,7 @@ class DaemonCore : public Service
 		*/
     void reconfig();
 
-	void refreshDNS();
+	void refreshDNS( int timerID = -1 );
 
     /** Not_Yet_Documented
         @param perm Not_Yet_Documented
@@ -855,7 +850,11 @@ class DaemonCore : public Service
         @return Not_Yet_Documented
     */
     int Cancel_Reaper (int rid);
-   
+
+
+    int numRegisteredReapers();
+    int countTimersByDescription( const char * description ) { return t.countTimersByDescription(description); }
+
 
     /** Not_Yet_Documented
         @param signal signal
@@ -1081,9 +1080,9 @@ class DaemonCore : public Service
 	   @param std_fd
 	     The fd to identify the pipe to read: 1 for stdout, 2 for stderr.
 	   @return
-	     Pointer to a MyString object containing all the data written so far.
+	     Pointer to a string object containing all the data written so far.
 	*/
-	MyString* Read_Std_Pipe(int pid, int std_fd);
+	std::string* Read_Std_Pipe(int pid, int std_fd);
 
 	/**
 	   Write data to the given DC process's stdin pipe.
@@ -1334,7 +1333,7 @@ class DaemonCore : public Service
                pipe and register everything for you automatically. If
                you use this for stdin, you can use Write_Std_Pipe() to
                write to the stdin of the child. If you use this for
-               std(out|err) then you can get a pointer to a MyString
+               std(out|err) then you can get a pointer to a string
                with all the data written by the child using Read_Std_Pipe().
         @param nice_inc The value to be passed to nice() in the
                child.  0 < nice < 20, and greater numbers mean
@@ -1373,31 +1372,7 @@ class DaemonCore : public Service
         size_t          *core_hard_limit     = NULL,
         int             *affinity_mask       = NULL,
         char const      *daemon_sock         = NULL,
-        MyString        *err_return_msg      = NULL,
-        FilesystemRemap *remap               = NULL,
-        long            as_hard_limit        = 0l
-        );
-
-    int Create_Process (
-        const char      *name,
-        ArgList const   &arglist,
-        priv_state      priv                 /* = PRIV_UNKNOWN */,
-        int             reaper_id            /* = 1 */,
-        int             want_commanand_port  /* = TRUE */,
-        int             want_udp_comm_port   /* = TRUE */,
-        Env const       *env                 /* = NULL */,
-        const char      *cwd                 /* = NULL */,
-        FamilyInfo      *family_info         /* = NULL */,
-        Stream          *sock_inherit_list[] /* = NULL */,
-        int             std[]                /* = NULL */,
-        int             fd_inherit_list[]    /* = NULL */,
-        int             nice_inc             /* = 0 */,
-        sigset_t        *sigmask             /* = NULL */,
-        int             job_opt_mask         /* = 0 */,
-        size_t          *core_hard_limit     /* = NULL */,
-        int             *affinity_mask       /* = NULL */,
-        char const      *daemon_sock         /* = NULL */,
-        std::string     &err_return_msg,
+        std::string     *err_return_msg      = NULL,
         FilesystemRemap *remap               = NULL,
         long            as_hard_limit        = 0l
         );
@@ -1429,12 +1404,15 @@ class DaemonCore : public Service
     int Kill_Family(pid_t);
     int Signal_Process(pid_t,int);
     
-	/** Used to explicitly initialize our ProcFamilyInterface object.
-	    Calling this is not required - if not called, the object
-	    will be initialized on-demand: the first time Create_Process
-		is called with a non-NULL FamilyInfo argument
-	*/
-	void Proc_Family_Init();
+	// This method should go away in the long term.
+	// Daemon Core should be responsible for unregistering any subfamily
+	// that it creates when asked to monitor subfamilies as a side-effect
+	// of Create_Process.  It does this after calling the Reaper, but in
+	// the starter, the starter exit's in the reaper before it returns
+	// to daemon core, so subfamilies never get unregistered, and thus
+	// cgroups are never deleted.  This should only be called from
+	// the starter, or any other daemon where the reaper calls exit
+	void Unregister_subfamily(pid_t pid);
 
 	/** Used to explicitly cleanup our ProcFamilyInterface object
 	    (used by the Master before it restarts, since in that
@@ -1805,7 +1783,9 @@ class DaemonCore : public Service
 		// its selfAd.
 	bool SetupAdministratorSession(unsigned duration, std::string &capability);
 
-  private:      
+	void kill_immediate_children();
+
+  private:
 
 		// do and our parents/children want/have a udp comment socket?
 	bool m_wants_dc_udp;
@@ -1878,7 +1858,7 @@ class DaemonCore : public Service
 	void SetDaemonSockName( char const *sock_name );
 
     int HandleSigCommand(int command, Stream* stream);
-    int HandleReq(int socki, Stream* accepted_sock=NULL);
+    int HandleReq(size_t socki, Stream* accepted_sock=NULL);
 	int HandleReq(Stream *insock, Stream* accepted_sock=NULL);
 	int HandleReqSocketTimerHandler();
 	int HandleReqSocketHandler(Stream *stream);
@@ -1947,7 +1927,7 @@ class DaemonCore : public Service
 	                     PidEnvID* penvid,
 	                     const char* login,
 	                     gid_t* group,
-			     const char* cgroup);
+	                     const FamilyInfo* fi);
 
 	void CheckForTimeSkip(time_t time_before, time_t okay_delta);
 
@@ -1969,30 +1949,26 @@ class DaemonCore : public Service
 	// variable.  Returns index into sockTable, -1 if none available.
 	int initial_command_sock() const;
 
-    struct CommandEnt
-    {
-        int             num;
-        bool            is_cpp;
-        bool            force_authentication;
-        CommandHandler  handler;
-        CommandHandlercpp   handlercpp;
-        DCpermission    perm;
-        Service*        service; 
-        char*           command_descrip;
-        char*           handler_descrip;
-        void*           data_ptr;
-	int             wait_for_payload;
+	struct CommandEnt
+	{
+		int             num{0};
+		bool            is_cpp{true};
+		bool            force_authentication{false};
+		CommandHandler  handler{nullptr};
+		CommandHandlercpp   handlercpp{nullptr};
+		DCpermission    perm{ALLOW};
+		Service*        service{nullptr};
+		char*           command_descrip{nullptr};
+		char*           handler_descrip{nullptr};
+		void*           data_ptr{nullptr};
+		int             wait_for_payload{0};
 		// If there are alternate permission levels where the
 		// command is permitted, they will be listed here.
-	std::vector<DCpermission> *alternate_perm{nullptr};
-
-		CommandEnt() : num(0), is_cpp(true), force_authentication(false), handler(0), handlercpp(0), perm(ALLOW), service(0), command_descrip(0), handler_descrip(0), data_ptr(0), wait_for_payload(0) {}
+		std::vector<DCpermission> *alternate_perm{nullptr};
     };
 
     void                DumpCommandTable(int, const char* = NULL);
-    int                 maxCommand;     // max number of command handlers
-    int                 nCommand;       // number of command handlers used
-    ExtArray<CommandEnt>         comTable;       // command table
+	std::vector<CommandEnt>         comTable;       // command table
     CommandEnt          m_unregisteredCommand;
 
     struct SignalEnt 
@@ -2011,9 +1987,7 @@ class DaemonCore : public Service
         void*           data_ptr;
     };
     void                DumpSigTable(int, const char* = NULL);
-    int                 maxSig;      // max number of signal handlers
-    int                 nSig;        // high-water mark of entries used
-    ExtArray<SignalEnt> sigTable;    // signal table
+	std::vector<SignalEnt> sigTable;    // signal table
     volatile int        sent_signal; // TRUE if a signal handler sends a signal
 
     struct SockEnt
@@ -2036,11 +2010,9 @@ class DaemonCore : public Service
 		bool            is_command_sock;
     };
     void              DumpSocketTable(int, const char* = NULL);
-    int               maxSocket;  // number of socket handlers to start with
-    int               nSock;      // number of socket handler slots in use use
 	int				  nRegisteredSocks; // number of sockets registered, always < nSock
 	int               nPendingSockets; // number of sockets waiting on timers or any other callbacks
-    ExtArray<SockEnt> *sockTable; // socket table; grows dynamically if needed
+	std::vector<SockEnt> sockTable; // socket table; grows dynamically if needed
 
 		// number of file descriptors in use past which we should start
 		// avoiding the creation of new persistent sockets.  Do not use
@@ -2054,11 +2026,10 @@ class DaemonCore : public Service
 #else
 	typedef int PipeHandle;
 #endif
-	ExtArray<PipeHandle>* pipeHandleTable;
-	int maxPipeHandleIndex;
-	int pipeHandleTableInsert(PipeHandle);
-	void pipeHandleTableRemove(int);
-	int pipeHandleTableLookup(int, PipeHandle* = NULL);
+	std::vector<PipeHandle> pipeHandleTable;
+	size_t pipeHandleTableInsert(PipeHandle);
+	void pipeHandleTableRemove(size_t);
+	int pipeHandleTableLookup(size_t, PipeHandle* = NULL);
 	int maxPipeBuffer;
 
 	// this table is for dispatching registered pipes
@@ -2078,10 +2049,7 @@ class DaemonCore : public Service
 		bool			call_handler;
 		bool			in_handler;
     };
-    // void              DumpPipeTable(int, const char* = NULL);
-    int               maxPipe;  // number of pipe handlers to start with
-    int               nPipe;      // number of pipe handlers used
-    ExtArray<PipeEnt> *pipeTable; // pipe table; grows dynamically if needed
+	std::vector<PipeEnt> pipeTable; // pipe table; grows dynamically if needed
 
     struct ReapEnt
     {
@@ -2095,10 +2063,9 @@ class DaemonCore : public Service
         void*           data_ptr;
     };
     void                DumpReapTable(int, const char* = NULL);
-    int                 maxReap;        // max number of reaper handlers
-    int                 nReap;          // number of reaper handlers used
+    size_t              nReap;          // number of reaper handlers used
     int                 nextReapId;     // next reaper id to use
-    ExtArray<ReapEnt>  reapTable;      // reaper table
+	std::vector<ReapEnt>  reapTable;      // reaper table
     int                 defaultReaper;
 
     class PidEntry : public Service
@@ -2115,22 +2082,22 @@ class DaemonCore : public Service
         HANDLE hProcess;
         HANDLE hThread;
         DWORD tid;
-        HWND hWnd;
 		LONG pipeReady;
 		PipeEnd *pipeEnd;
-		LONG deallocate;
 		HANDLE watcherEvent;
+		LONG deallocate;
 #endif
-        std::string sinful_string;
+		volatile unsigned int process_exited;   // set to true if the process has exited, set before reaper callback
+		std::string sinful_string;
         int is_local;
         int parent_is_local;
         int reaper_id;
         int std_pipes[3];  // Pipe handles for automagic DC std pipes.
-        MyString* pipe_buf[3];  // Buffers for data written to DC std pipes.
+        std::string* pipe_buf[3];  // Buffers for data written to DC std pipes.
         int stdin_offset;
 
 		// these three data members are set/used by the DaemonKeepAlive class
-        unsigned int hung_past_this_time;   // if >0, child is hung if time() > this value
+        time_t hung_past_this_time;   // if >0, child is hung if time() > this value
         int was_not_responding;
         int got_alive_msg; // number of child alive messages received
 
@@ -2144,8 +2111,7 @@ class DaemonCore : public Service
 
 	int m_refresh_dns_timer;
 
-    typedef HashTable <pid_t, PidEntry *> PidHashTable;
-    PidHashTable* pidTable;
+	std::map<pid_t, PidEntry> pidTable;
     pid_t mypid;
     pid_t ppid;
 
@@ -2240,7 +2206,7 @@ class DaemonCore : public Service
 	// Method to check on and possibly recover from a bad connection
 	// to the procd. Suitable to be registered as a one-shot timer.
 	int CheckProcInterface();
-	void CheckProcInterfaceFromTimer() { (void)CheckProcInterface(); }
+	void CheckProcInterfaceFromTimer( int /* timerID */ ) { (void)CheckProcInterface(); }
 
 	// misc helper functions
 	void CheckPrivState( void );
@@ -2252,9 +2218,7 @@ class DaemonCore : public Service
 		// i - index of registered socket
 		// default_to_HandleCommand - true if HandleCommand() should be called
 		//                          if there is no other callback function
-		// On return, i may be modified so that when incremented,
-		// it will index the next registered socket.
-	void CallSocketHandler( int &i, bool default_to_HandleCommand );
+	void CallSocketHandler( const size_t i, bool default_to_HandleCommand );
 	static void CallSocketHandler_worker_demarshall(void *args);
 	void CallSocketHandler_worker( int i, bool default_to_HandleCommand, Stream* asock );
 	

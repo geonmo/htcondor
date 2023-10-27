@@ -26,7 +26,6 @@
 #include "dc_collector.h"
 #include "internet.h"
 #include "print_wrapped_text.h"
-#include "MyString.h"
 #include "ad_printmask.h"
 #include "directory.h"
 #include "iso_dates.h"
@@ -80,18 +79,13 @@ static bool isHistoryBackup(const char *fullFilename, time_t *backup_time, const
 }
 
 // Used by sort in findHistoryFiles() to sort history files. 
-static bool compareHistoryFilenames(const char * lhs, const char *rhs)
+static bool compareHistoryFilenames(const std::string& lhs, const std::string& rhs)
 {
     time_t time1, time2;
 
-    isHistoryBackup(lhs, &time1, qsort_file_base);
-    isHistoryBackup(rhs, &time2, qsort_file_base);
+    isHistoryBackup(lhs.c_str(), &time1, qsort_file_base);
+    isHistoryBackup(rhs.c_str(), &time2, qsort_file_base);
     return time1 < time2;
-}
-
-extern void freeHistoryFilesList(const char ** files)
-{
-    if (files) free(const_cast<char**>(files));
 }
 
 // Find all of the history files that the schedd created, and put them
@@ -100,86 +94,53 @@ extern void freeHistoryFilesList(const char ** files)
 //    [0] = "/scratch/condor/spool/history.20151019T161810"
 //    [1] = "/scratch/condor/spool/history.20151020T161810"
 //    [2] = "/scratch/condor/spool/history"
-// the return value is a pointer to an array of const char* filenames.
-// if the history configuration is invalid, then NULL is returned.
-// if the history configuration is valid, but there are no history files
-// then an allocated pointer is still returned, but *pnumHistoryFiles will be 0
-const char **findHistoryFiles(const char *passedFileName, int *pnumHistoryFiles)
+// the return value is a vector of strings
+std::vector<std::string> findHistoryFiles(const char *passedFileName)
 {
-    char **historyFiles = NULL;
+    std::vector<std::string> historyFiles;
     bool foundCurrent = false; // true if 'current' history file (i.e. without extension) exists
-    int  cchExtra = 0; // total number of characters needed to hold the file extensions
-    int  numFiles = 0;
-    StringList tmpList; // temporarily hold the filenames so we don't have to iterate the directory twice.
 
-	if ( passedFileName == NULL ) {
-		return NULL;
-	}
-    char *historyDir = condor_dirname(passedFileName);
+    if ( passedFileName == NULL ) {
+        return historyFiles;
+    }
+	std::string historyDir(condor_dirname(passedFileName));
     const char * historyBase = condor_basename(passedFileName);
 
-    if (historyDir != NULL) {
-        Directory dir(historyDir);
-        int cchBaseName = strlen(historyBase);
-        int cchBaseFileName = strlen(passedFileName);
+	Directory dir(historyDir.c_str());
 
-        // We walk through once and count the number of history file backups
-        // and keep track of all of the file extensions for backup files.
-         for (const char *current_filename = dir.Next(); 
-             current_filename != NULL; 
-             current_filename = dir.Next()) {
+	// We walk through directory and add matching files to vector
+	for (const char *current_filename = dir.Next(); 
+			current_filename != NULL; 
+			current_filename = dir.Next()) {
 
-            const char * current_base = condor_basename(current_filename);
-           #ifdef WIN32
-            if (MATCH == strcasecmp(historyBase, current_base)) {
-           #else
-            if (MATCH == strcmp(historyBase, current_base)) {
-           #endif
-                numFiles++;
-                foundCurrent = true;
-            } else if (isHistoryBackup(current_filename, NULL, historyBase)) {
-                numFiles++;
-                const char * pextra = current_filename + cchBaseName;
-                tmpList.append(pextra);
-                cchExtra += strlen(pextra);
-            }
-        }
+		const char * current_base = condor_basename(current_filename);
+#ifdef WIN32
+		if (MATCH == strcasecmp(historyBase, current_base)) {
+#else
+			if (MATCH == strcmp(historyBase, current_base)) {
+#endif
+				foundCurrent = true;
+			} else if (isHistoryBackup(current_filename, NULL, historyBase)) {
+				std::string fullFilePath;
+				dircat(historyDir.c_str(), current_filename, fullFilePath);
+				historyFiles.push_back(fullFilePath);
+			}
+		}
 
-        // allocate space for the array, and also for copies of the filenames
-        // we will use this the first part of this allocation as the array,
-        // and later parts to hold the filenames
-        historyFiles = (char **) malloc(cchExtra + numFiles * (cchBaseFileName+1) + (numFiles+1) * (sizeof(char*)));
-        ASSERT( historyFiles );
+		if (historyFiles.size() > 1) {
+			// Sort the backup files so that they are in the proper order
+			qsort_file_base = historyBase;
+			std::sort(historyFiles.begin(), historyFiles.end(), compareHistoryFilenames);
+		}
 
-        // Walk through the extension list to again to fill in the names
-        // then append the current history file (if any)
-        int  fileIndex = 0;
-        char * p = (char*)historyFiles + sizeof(const char*) * (numFiles+1); // start at first byte after the char* array
-        for (const char * ext = tmpList.first(); ext != NULL; ext = tmpList.next()) {
-            historyFiles[fileIndex++] = p;
-            strcpy(p, passedFileName);
-            strcpy(p + cchBaseFileName, ext);
-            p += cchBaseFileName + strlen(ext) + 1;
-        }
-        // if the base history file was found in the directory, add it to the list also
-        if (foundCurrent) {
-            historyFiles[fileIndex++] = p;
-            strcpy(p, passedFileName);
-        }
-        historyFiles[fileIndex] = NULL; // put a NULL at the end of the array.
+		// if the base history file was found in the directory, add it to
+		// the end of the sorted vector
+		if (foundCurrent) {
+			historyFiles.push_back(passedFileName);
+		}
 
-        if (numFiles > 2) {
-            // Sort the backup files so that they are in the proper 
-            // order. The current history file is already in the right place.
-            qsort_file_base = historyBase;
-            std::sort(historyFiles, &historyFiles[numFiles - 1], compareHistoryFilenames);
-        }
-
-        free(historyDir);
-    }
-    *pnumHistoryFiles = numFiles;
-    return const_cast<const char**>(historyFiles);
-}
+		return historyFiles;
+	}
 
 
 

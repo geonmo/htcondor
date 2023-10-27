@@ -23,7 +23,6 @@
 
 #include "condor_classad.h"
 #include "simplelist.h"
-#include "gahp_common.h"
 #include "vmgahp.h"
 #include "vm_type.h"
 #include <libvirt/libvirt.h>
@@ -83,7 +82,7 @@ protected:
 	// attributes and the type for each attribute.
 	virtual bool CreateVirshConfigFile(const char* filename);
 
-	SimpleList<XenDisk*> m_disk_list;
+	std::vector<XenDisk*> m_disk_list;
 
 	std::string m_xen_cdrom_device;
 	std::string m_suspendfile;

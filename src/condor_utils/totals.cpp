@@ -21,9 +21,7 @@
 #include "condor_state.h"
 #include "enum_utils.h"
 #include "condor_attributes.h"
-#include "MyString.h"
 #include "stdio.h"
-#include "HashTable.h"
 #include "totals.h"
 #include "string_list.h"
 
@@ -32,7 +30,7 @@
 
 
 TrackTotals::
-TrackTotals (ppOption m) : allTotals(hashFunction)
+TrackTotals (ppOption m)
 {
 	ppo = m;
 	malformed = 0;
@@ -42,19 +40,17 @@ TrackTotals (ppOption m) : allTotals(hashFunction)
 TrackTotals::
 ~TrackTotals ()
 {
-	ClassTotal *ct;
-
-	allTotals.startIterations();
-	while (allTotals.iterate(ct))
+	for (auto& [key, ct] : allTotals) {
 		delete ct;
+	}
 	delete topLevelTotal;
 }
 
 int TrackTotals::
-update (ClassAd *ad, int options, const char * _key /*=NULL*/)
+update (ClassAd *ad, int options, const char * _key /*=""*/)
 {
 	ClassTotal *ct;
-	MyString	key(_key);
+	std::string key(_key ? _key : "");
 	int		   	rval;
 
 	if ( key.empty() && ! ClassTotal::makeKey(key, ad, ppo))
@@ -63,15 +59,14 @@ update (ClassAd *ad, int options, const char * _key /*=NULL*/)
 		return 0;
 	}
 
-	if (allTotals.lookup (key, ct) < 0)
+	auto itr = allTotals.find(key);
+	if (itr == allTotals.end())
 	{
 		ct = ClassTotal::makeTotalObject (ppo);
 		if (!ct) return 0;
-		if (allTotals.insert (key, ct) < 0)
-		{
-			delete ct;
-			return 0;
-		}
+		allTotals[key] = ct;
+	} else {
+		ct = itr->second;
 	}
 
 	rval = ct->update(ad, options);
@@ -107,37 +102,16 @@ bool TrackTotals::haveTotals()
 void TrackTotals::
 displayTotals (FILE *file, int keyLength)
 {
-	ClassTotal *ct=0;
-	MyString	key;
-	int k;
 	bool auto_key_length = keyLength < 0;
 	if (auto_key_length) { keyLength = 5; } // must be at least 5 for "Total"
 
 	// display totals only for meaningful modes
 	if ( ! haveTotals()) return;
 
-		
-	// sort the keys (insertion sort) so we display totals in sorted order
-	char **keys = new char* [allTotals.getNumElements()];
-	ASSERT(keys);
-	allTotals.startIterations();
-	for (k = 0; k < allTotals.getNumElements(); k++) // for each key
-	{
-		allTotals.iterate(key, ct);
-		// find the position where we want to insert the key
-		int pos;
-		for (pos = 0; pos < k && strcmp(keys[pos], key.c_str()) < 0; pos++) { }
-		if (pos < k) {
-			// if we are not inserting at the end of the array, then
-			// we must shift the elements to the right to make room;
-			// we use memmove() because it handles overlapping buffers
-			// correctly (and efficiently)
-			memmove(keys+pos+1, keys+pos, (k-pos)*sizeof(char *));
-		}
-		// insert the key in the right position in the list
-		keys[pos] = strdup(key.c_str());
-		if (auto_key_length) {
-			keyLength = MAX(keyLength, key.length());
+	// Find the longest key length
+	if (auto_key_length) {
+		for (auto& [key, ct] : allTotals) {
+			keyLength = MAX(keyLength, (int)key.length());
 		}
 	}
 
@@ -146,17 +120,14 @@ displayTotals (FILE *file, int keyLength)
 	topLevelTotal->displayHeader(file);
 	fprintf (file, "\n");
 
-	// now that our keys are sorted, display the totals in sort order
+	// display the totals
+	// The map's comparison function gives us the entries sorted by key
 	bool had_tot_keys = false;
-	for (k = 0; k < allTotals.getNumElements(); k++)
-	{
-		fprintf (file, "%*.*s", keyLength, keyLength, keys[k]);
-		allTotals.lookup(MyString(keys[k]), ct);
-		free(keys[k]);
+	for (auto& [key, ct] : allTotals) {
+		fprintf (file, "%*.*s", keyLength, keyLength, key.c_str());
 		ct->displayInfo(file);
 		had_tot_keys = true;
 	}
-	delete [] keys;
 	if (had_tot_keys) fprintf(file, "\n");
 	fprintf (file, "%*.*s", keyLength, keyLength, "Total");
 	topLevelTotal->displayInfo(file,1);
@@ -169,24 +140,6 @@ displayTotals (FILE *file, int keyLength)
 }
 
 
-
-StartdNormalTotal::
-StartdNormalTotal()
-{
-	ppo = PP_STARTD_NORMAL;
-	machines = 0;
-	owner = 0;
-	unclaimed = 0;
-	claimed = 0;
-	matched = 0;
-	preempting = 0;
-#if HAVE_BACKFILL
-	backfill = 0;
-#endif /* HAVE_BACKFILL */
-	drained = 0;
-}
-
-
 int StartdNormalTotal::
 update (ClassAd *ad, int options)
 {
@@ -194,9 +147,11 @@ update (ClassAd *ad, int options)
 
 	bool partitionable_slot = false;
 	bool dynamic_slot = false;
+	bool backfill_slot = false;
 	if (options) {
 		ad->LookupBool(ATTR_SLOT_PARTITIONABLE, partitionable_slot);
 		if ( ! partitionable_slot) { ad->LookupBool(ATTR_SLOT_DYNAMIC, dynamic_slot); }
+		if (options & TOTALS_OPTION_BACKFILL_SLOTS) { ad->LookupBool(ATTR_SLOT_BACKFILL, backfill_slot); }
 	}
 
 	if ((options & TOTALS_OPTION_IGNORE_PARTITIONABLE) && partitionable_slot) return 1;
@@ -204,35 +159,39 @@ update (ClassAd *ad, int options)
 	if ((options & TOTALS_OPTION_ROLLUP_PARTITIONABLE) && partitionable_slot) {
 		classad::Value lval;
 		const classad::ExprList* plist = NULL;
-		if ( ! ad->EvaluateAttr("Child" ATTR_STATE, lval) || ! lval.IsListValue(plist)) return 1; // ChildState can be validly empty
-		classad::ExprList::const_iterator it;
-		for (it = plist->begin(); it != plist->end(); ++it) {
-			const classad::ExprTree * pexpr = *it;
-			classad::Value val;
-			if (pexpr->Evaluate(val) && val.IsStringValue(state,sizeof(state)-1)) {
-				update(state);
+		if ( ! ad->EvaluateAttr("Child" ATTR_STATE, lval, classad::Value::ALL_VALUES) || ! lval.IsListValue(plist)) return 1; // ChildState can be validly empty
+		for (auto it : *plist) {
+			const char * cstr = nullptr;
+			if (ExprTreeIsLiteralString(it, cstr) && cstr) {
+				update(cstr, backfill_slot);
 			}
 		}
 		return 1;
 	} else {
 		if (!ad->LookupString (ATTR_STATE, state, sizeof(state))) return 0;
-		return update(state);
+		return update(state, backfill_slot);
 	}
 }
 
 int StartdNormalTotal::
-update (const char * state)
+update (const char * state, bool backfill_slot)
 {
-	switch (string_to_state (state))
+	State st = string_to_state (state);
+	if (backfill_slot) {
+		if (st == unclaimed_state) {
+			++backfill_idle;
+			return 1; // don't count idle backfill slots in the machine total
+		}
+		if (st == claimed_state) st = backfill_state;
+	}
+	switch (st)
 	{
 		case owner_state: 		owner++; 		break;
 		case unclaimed_state: 	unclaimed++; 	break;
 		case claimed_state:		claimed++;		break;
 		case matched_state:		matched++;		break;
 		case preempting_state:	preempting++;	break;
-#if HAVE_BACKFILL
 		case backfill_state:	backfill++;		break;
-#endif
 		case drained_state:		drained++;	break;
 		default: return 0;
 	}
@@ -244,28 +203,18 @@ update (const char * state)
 void StartdNormalTotal::
 displayHeader(FILE *file)
 {
-#if HAVE_BACKFILL
-	fprintf (file, "%6.6s %5.5s %7.7s %9.9s %7.7s %10.10s %8.8s %6.6s\n",
+	fprintf (file, "%6.6s %5.5s %7.7s %9.9s %7.7s %10.10s %6.6s %8.8s %6.6s\n",
 					"Total", "Owner", "Claimed", "Unclaimed", "Matched",
-					"Preempting", "Backfill", "Drain");
-#else
-	fprintf (file, "%9.9s %5.5s %7.7s %9.9s %7.7s %10.10s %6.6s\n", "Machines",
-					"Owner", "Claimed", "Unclaimed", "Matched", "Preempting", "Drain");
-#endif /* HAVE_BACKFILL */
+					"Preempting", "Drain", "Backfill", "BkIdle");
 }
 
 
 void StartdNormalTotal::
 displayInfo (FILE *file, int)
 {
-#if HAVE_BACKFILL
-	fprintf ( file, "%6d %5d %7d %9d %7d %10d %8d %6d\n", machines, owner,
-			  claimed, unclaimed, matched, preempting, backfill, drained );
+	fprintf ( file, "%6d %5d %7d %9d %7d %10d %6d %8d %6d\n", machines, owner,
+			  claimed, unclaimed, matched, preempting, drained, backfill, backfill_idle);
 
-#else 
-	fprintf (file, "%9d %5d %7d %9d %7d %10d %6d\n", machines, owner, claimed,
-					unclaimed, matched, preempting, drained);
-#endif /* HAVE_BACKFILL */
 }
 
 
@@ -397,21 +346,6 @@ displayInfo (FILE *file, int)
 }
 
 
-StartdStateTotal::
-StartdStateTotal()
-{
-	machines = 0;
-	owner = 0;
-	unclaimed = 0;
-	claimed = 0;
-	preempt = 0;
-	matched = 0;
-#if HAVE_BACKFILL
-	backfill = 0;
-#endif
-	drained = 0;
-}
-
 int StartdStateTotal::
 update (ClassAd *ad, int options)
 {
@@ -419,9 +353,11 @@ update (ClassAd *ad, int options)
 
 	bool partitionable_slot = false;
 	bool dynamic_slot = false;
+	bool backfill_slot = false;
 	if (options) {
 		ad->LookupBool(ATTR_SLOT_PARTITIONABLE, partitionable_slot);
 		if ( ! partitionable_slot) { ad->LookupBool(ATTR_SLOT_DYNAMIC, dynamic_slot); }
+		if (options & TOTALS_OPTION_BACKFILL_SLOTS) { ad->LookupBool(ATTR_SLOT_BACKFILL, backfill_slot); }
 	}
 
 	if ((options & TOTALS_OPTION_IGNORE_PARTITIONABLE) && partitionable_slot) return 1;
@@ -429,35 +365,39 @@ update (ClassAd *ad, int options)
 	if ((options & TOTALS_OPTION_ROLLUP_PARTITIONABLE) && partitionable_slot) {
 		classad::Value lval;
 		const classad::ExprList* plist = NULL;
-		if ( ! ad->EvaluateAttr("Child" ATTR_STATE, lval) || ! lval.IsListValue(plist)) return 1;
-		classad::ExprList::const_iterator it;
-		for (it = plist->begin(); it != plist->end(); ++it) {
-			const classad::ExprTree * pexpr = *it;
-			classad::Value val;
-			if (pexpr->Evaluate(val) && val.IsStringValue(state,sizeof(state)-1)) {
-				update(state);
+		if ( ! ad->EvaluateAttr("Child" ATTR_STATE, lval, classad::Value::ValueType::ALL_VALUES) || ! lval.IsListValue(plist)) return 1;
+		for (auto it : *plist) {
+			const char * cstr = nullptr;
+			if (ExprTreeIsLiteralString(it, cstr) && cstr) {
+				update(cstr, backfill_slot);
 			}
 		}
 		return 1;
 	} else {
 		if (!ad->LookupString (ATTR_STATE, state, sizeof(state))) return 0;
-		return update(state);
+		return update(state, backfill_slot);
 	}
 }
 
 
 int StartdStateTotal::
-update (const char * state)
+update (const char * state, bool backfill_slot)
 {
-	switch (string_to_state(state)) {
+	State st = string_to_state (state);
+	if (backfill_slot) {
+		if (st == unclaimed_state) {
+			++backfill_idle;
+			return 1; // don't count idle backfill slots in the machine total
+		}
+		if (st == claimed_state) st = backfill_state;
+	}
+	switch (st) {
 		case owner_state	:	owner++;		break;
 		case unclaimed_state:	unclaimed++;	break;
 		case claimed_state	:	claimed++;		break;
 		case preempting_state:	preempt++;		break;
 		case matched_state	:	matched++;		break;
-#if HAVE_BACKFILL
 		case backfill_state:	backfill++;		break;
-#endif
 		case drained_state:		drained++;	break;
 		default				:	return false;
 	}
@@ -469,27 +409,17 @@ update (const char * state)
 void StartdStateTotal::
 displayHeader(FILE *file)
 {
-#if HAVE_BACKFILL
-	fprintf (file, "%6.6s %5.5s %9.9s %7.7s %10.10s %7.7s %8.8s %6.6s\n",
+	fprintf (file, "%6.6s %5.5s %9.9s %7.7s %10.10s %7.7s %6.6s %8.8s %6.6s\n",
 					"Total", "Owner", "Unclaimed", "Claimed",
-					"Preempting", "Matched", "Backfill", "Drain");
-#else
-	fprintf( file, "%10.10s %5.5s %9.9s %7.7s %10.10s %7.7s %6.6s\n", "Machines",
-				"Owner", "Unclaimed", "Claimed", "Preempting", "Matched", "Drain" );
-#endif /* HAVE_BACKFILL */
+					"Preempting", "Matched", "Drain", "Backfill", "BkIdle");
 }
 
 
 void StartdStateTotal::
 displayInfo( FILE *file, int )
 {
-#if HAVE_BACKFILL
-	fprintf( file, "%6d %5d %9d %7d %10d %7d %8d %6d\n", machines, owner, 
-			 unclaimed, claimed, preempt, matched, backfill, drained );
-#else
-	fprintf( file, "%10d %5d %9d %7d %10d %7d %6d\n", machines, owner, 
-			 unclaimed, claimed, preempt, matched, drained );
-#endif /* HAVE_BACKFILL */
+	fprintf( file, "%6d %5d %9d %7d %10d %7d %6d %8d %6d\n", machines, owner,
+			 unclaimed, claimed, preempt, matched, drained, backfill, backfill_idle);
 }
 
 
@@ -691,19 +621,6 @@ displayInfo (FILE *file, int tl)
 					 numServers, (PRIu64_t) disk);
 }
 
-ClassTotal::
-ClassTotal()
-{
-	ppo = PP_NOTSET;
-}
-
-
-ClassTotal::
-~ClassTotal()
-{
-}
-
-
 ClassTotal *ClassTotal::
 makeTotalObject (ppOption ppo)
 {
@@ -729,7 +646,7 @@ makeTotalObject (ppOption ppo)
 
 
 int ClassTotal::
-makeKey (MyString &key, ClassAd *ad, ppOption ppo)
+makeKey (std::string &key, ClassAd *ad, ppOption ppo)
 {
 	char p1[256], p2[256], buf[512];
 
@@ -742,14 +659,14 @@ makeKey (MyString &key, ClassAd *ad, ppOption ppo)
 			if (!ad->LookupString(ATTR_ARCH, p1, sizeof(p1)) || 
 				!ad->LookupString(ATTR_OPSYS, p2, sizeof(p2)))
 					return 0;
-			sprintf(buf, "%s/%s", p1, p2);
+			snprintf(buf, sizeof(buf), "%s/%s", p1, p2);
 			key = buf;
 			return 1;
 
 		case PP_STARTD_STATE:
 			if( !ad->LookupString( ATTR_ACTIVITY , p1, sizeof(p1) ) )
 				return 0;
-			sprintf( buf, "%s", p1 );
+			snprintf( buf, sizeof(buf), "%s", p1 );
 			key = buf;
 			return 1;
 
@@ -775,7 +692,7 @@ getCODInt( ClassAd* ad, const char* id, const char* attr, int alt_val )
 {
 	int rval;
 	char buf[128];
-	sprintf( buf, "%s_%s", id, attr );
+	snprintf( buf, sizeof(buf), "%s_%s", id, attr );
 	if( ad->LookupInteger(buf, rval) ) {
 		return rval;
 	}
@@ -789,7 +706,7 @@ getCODStr( ClassAd* ad, const char* id, const char* attr,
 {
 	char* tmp = NULL;
 	char buf[128];
-	sprintf( buf, "%s_%s", id, attr );
+	snprintf( buf, sizeof(buf), "%s_%s", id, attr );
 	ad->LookupString( buf, &tmp );
 	if( tmp ) {
 		return tmp;

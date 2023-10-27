@@ -8,6 +8,7 @@
 
 from ornithology import *
 import os
+import htcondor
 from pathlib import Path
 from time import sleep
 from time import time
@@ -20,6 +21,7 @@ outputFiles = [
     "hist_file_epoch.txt",
     "hist_file_cluster.txt",
     "hist_file_cluster_proc.txt",
+    "hist_file_jid_match_regression.txt",
     "base_epoch.txt",
     "cluster.txt",
     "cluster_proc.txt",
@@ -34,6 +36,11 @@ expectedOutput = {
     "hist_file_epoch.txt":{"1.0 1.1 2.0 2.1":8},
     "hist_file_cluster.txt":{"1.0 1.1":4},
     "hist_file_cluster_proc.txt":{"1.0":2},
+    #There was a bug in the condor history exit once all possible jobs
+    #are found where if the last passed job is to be found after the
+    #other passed jobs it would be skipped. The below test makes sure that
+    #regression doesnt occur
+    "hist_file_jid_match_regression.txt":{"1.0 2.1":4},
     #All others check based on directory
     "base_epoch.txt":{"1.0 1.1 2.0 2.1":8},
     "cluster.txt":{"1.0 1.1":4},
@@ -62,11 +69,11 @@ def error(msg,test_passing):
         print("{}".format(msg))
 
 #--------------------------------------------------------------------------------------------
-#Start a personal condor with JOB_EPOCH_INSTANCE_DIR set
+#Start a personal condor with JOB_EPOCH_HISTORY_DIR set
 @standup
 def condor(test_dir):
     with Condor(local_dir=test_dir / "condor",config={"SCHEDD_INTERVAL":1,
-                                                      "JOB_EPOCH_INSTANCE_DIR":"{0}".format(test_dir / epochDir),
+                                                      "JOB_EPOCH_HISTORY_DIR":"{0}".format(test_dir / epochDir),
                                                       "JOB_EPOCH_HISTORY":"{0}".format(test_dir / epochDir / "epoch_history")}) as condor:
         yield condor
 
@@ -107,18 +114,19 @@ def run_crondor_jobs(condor,test_dir,path_to_sleep):
 #"Test param":"Command for os"
 
 #Cannot test with no path because condor_history is using the parent condor tools and doesn't
-#have JOB_EPOCH_INSTANCE_DIR set and we don't want it because other jobs will write tests 
+#have JOB_EPOCH_HISTORY_DIR set and we don't want it because other jobs will write tests
 #there messing up this test. So, check condor_history -epoch for Error message
 "(file) history":"condor_history -epoch",
 "(file) history w/ cluster":"condor_history -epoch 1",
 "(file) history w/ cluster.proc":"condor_history -epoch 1.0",
-"(dir) history":"condor_history -epoch",
-"(dir) history w/ cluster":"condor_history -epoch 1",
-"(dir) history w/ cluster.proc":"condor_history -epoch 1.0",
-"(dir) history w/ delete & limit":"condor_history -epoch:d -limit 1",
-"(dir) history w/ delete & match":"condor_history -epoch:d -match 1",
-"(dir) history w/ delete & scanlimit":"condor_history -epoch:d -scanlimit 1",
-"(dir) history w/ delete":"condor_history -epoch:d",
+"(file) history job id mathing regression":"condor_history -epoch 2.1 1.0",
+"(dir) history":"condor_history -dir -epoch",
+"(dir) history w/ cluster":"condor_history -dir -epoch 1",
+"(dir) history w/ cluster.proc":"condor_history -dir -epoch 1.0",
+"(dir) history w/ delete & limit":"condor_history -dir -epoch:d -limit 1",
+"(dir) history w/ delete & match":"condor_history -dir -epoch:d -match 1",
+"(dir) history w/ delete & scanlimit":"condor_history -dir -epoch:d -scanlimit 1",
+"(dir) history w/ delete":"condor_history -dir -epoch:d",
 })
 def read_epochs(condor,test_dir,path_to_sleep,request):
     global historyTestNum
@@ -131,13 +139,7 @@ def read_epochs(condor,test_dir,path_to_sleep,request):
         if historyTestNum == 0:
             print("\nERROR: Set up failed. Cannot test history tools.")
         return False
-    #If non-history like epoch file then reconfig to not have it
-    if outputFiles[historyTestNum][:4] != "hist" and outputFiles[historyTestNum] == "base_epoch.txt":
-        config = Path(test_dir / "condor" / "condor_config")
-        rf = open(config,"a")
-        rf.write("\nJOB_EPOCH_HISTORY=\n")
-        rf.close()
-        rp = condor.run_command(["condor_reconfig"])
+
     #Split based param command line for specific test into array
     cmd = request.param.split()
     cp = condor.run_command(cmd)
@@ -229,6 +231,16 @@ def read_epochs(condor,test_dir,path_to_sleep,request):
     #Return if the test has passed or not
     return test_passed
 
+#--------------------------------------------------------------------------------------------
+#Test getting epoch ads from the python bindings
+@action
+def runPyBindings(condor):
+    proj = ["ClusterId", "ProcId"]
+    hist_itr = None
+    with condor.use_config():
+        hist_itr = htcondor.Schedd().jobEpochHistory("ClusterId==1", proj)
+    return hist_itr
+
 #============================================================================================
 #This test must run in order of test_run_jobs then test_condor_history_reads_epochs
 class TestHistoryReadsEpochs:
@@ -236,7 +248,25 @@ class TestHistoryReadsEpochs:
     #We expect the jobs to finish successfully
     def test_run_jobs(self,run_crondor_jobs):
         assert run_crondor_jobs is True
+
     #Test the various condor_history options that should pass 
     def test_condor_history_reads_epochs(self,read_epochs):
         assert read_epochs is True
+
+    #Test the python bindings ability to query epoch history
+    def test_python_bindings(self, runPyBindings):
+        epoch_counts = {
+            "total" : 0,
+            "proc-0" : 0,
+            "proc-1" : 0,
+        }
+        for ad in runPyBindings:
+            assert ad.get("ClusterId", -1) == 1
+            proc_id = ad.get("ProcId", -1)
+            assert proc_id == 0 or proc_id == 1
+            epoch_counts["total"] += 1
+            epoch_counts[f"proc-{proc_id}"] += 1
+        assert epoch_counts["total"] == 4
+        assert epoch_counts["proc-0"] == 2
+        assert epoch_counts["proc-1"] == 2
 

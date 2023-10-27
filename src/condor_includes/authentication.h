@@ -147,8 +147,6 @@ class Authentication {
     //------------------------------------------
     
 	static void split_canonical_name(const std::string& can_name, std::string& user, std::string& domain );
-		// This version of the function exists to avoid use of MyString
-		// in ReliSock, because that gets linked into std univ jobs.
 		// This function is stubbed out in cedar_no_ckpt.C.
 		// The user and domain variables should be freed by the caller.
 	static void split_canonical_name(char const *can_name,char **user,char **domain);
@@ -188,7 +186,7 @@ class Authentication {
     
     int selectAuthenticationType( const std::string& my_methods, int remote_methods );
 
-	void map_authentication_name_to_canonical_name(int authentication_type, const char* method_string, const char* authentication_name);
+	void map_authentication_name_to_canonical_name(int authentication_type, const char* method_string, const char* authentication_name, std::string& canonical_user);
 
     int authenticate_inner( char *hostAddr, const char* auth_methods, CondorError* errstack, int timeout, bool non_blocking);
     
@@ -208,6 +206,7 @@ class Authentication {
 	time_t		m_auth_timeout_time;
 	bool		m_continue_handshake;
 	bool		m_continue_auth;
+	bool		m_continue_plugin;
 	bool		m_should_try_token_request{false};
 
 	static MapFile* global_map_file;

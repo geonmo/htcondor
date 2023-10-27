@@ -231,14 +231,13 @@ serialize_input( void )
 	if ( !stdio ) {
 
 		/**	Contrive a sinful string based on our IP address */
-		sprintf ( sinful, "<255.255.255.255:1234>" );
+		snprintf ( sinful, sizeof(sinful), "<255.255.255.255:1234>" );
 
 		/**	We were give all the raw data, so we're going to create
 			a fake machine ad that we will use when invoking the waking
 			mechanism */
 		ad = new ClassAd ();
-		SetMyTypeName ( *ad, STARTD_ADTYPE );
-		SetTargetTypeName ( *ad, JOB_ADTYPE );
+		SetMyTypeName ( *ad, STARTD_DAEMON_ADTYPE );
 		ad->Assign ( ATTR_HARDWARE_ADDRESS, mac );
 		ad->Assign ( ATTR_SUBNET_MASK, mask );
 		ad->Assign ( ATTR_MY_ADDRESS, sinful );

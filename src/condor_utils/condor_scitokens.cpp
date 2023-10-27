@@ -40,6 +40,7 @@ static int (*scitoken_get_expiration_ptr)(const SciToken token, long long *value
 	nullptr;
 static int (*scitoken_get_claim_string_list_ptr)(const SciToken token, const char *key, char ***value, char **err_msg) = nullptr;
 static void (*scitoken_free_string_list_ptr)(char **value) = nullptr;
+static int (*scitoken_config_set_str_ptr)(const char *key, const char *value, char **err_msg) = nullptr;
 
 #define LIBSCITOKENS_SO "libSciTokens.so.0"
 
@@ -154,6 +155,7 @@ htcondor::init_scitokens()
 			// are missing it's considered non-fatal.
 		scitoken_get_claim_string_list_ptr = (int (*)(const SciToken token, const char *key, char ***value, char **err_msg))dlsym(dl_hdl, "scitoken_get_claim_string_list");
 		scitoken_free_string_list_ptr = (void (*)(char **value))dlsym(dl_hdl, "scitoken_free_string_list");
+		scitoken_config_set_str_ptr = (int (*)(const char *key, const char *value, char **err_msg))dlsym(dl_hdl, "scitoken_config_set_str");
 	}
 #else
 #if defined(HAVE_EXT_SCITOKENS)
@@ -167,6 +169,9 @@ htcondor::init_scitokens()
 	scitoken_get_expiration_ptr = scitoken_get_expiration;
 	scitoken_get_claim_string_list_ptr = scitoken_get_claim_string_list;
 	scitoken_free_string_list_ptr = scitoken_free_string_list;
+	// Do a dlsym() in case we end up being linked against an older
+	// version of the SciTokens library.
+	scitoken_config_set_str_ptr = (int (*)(const char *key, const char *value, char **err_msg))dlsym(RTLD_DEFAULT,"scitoken_config_set_str");
 	g_init_success = true;
 #else
 	dprintf(D_SECURITY, "SciTokens support is not compiled in.\n");
@@ -178,6 +183,29 @@ htcondor::init_scitokens()
 	g_init_success = false;
 #endif
 	g_init_tried = true;
+
+	if (scitoken_config_set_str_ptr) {
+		std::string cache_loc;
+		param(cache_loc, "SEC_SCITOKENS_CACHE");
+		// CRUFT: 'auto' is no longer the default value
+		if (cache_loc == "auto") {
+			if (!param(cache_loc, "RUN")) {
+				param(cache_loc, "LOCK");
+			}
+			if (!cache_loc.empty()) {
+				cache_loc += "/cache";
+			}
+		}
+		if (!cache_loc.empty()) {
+			dprintf(D_SECURITY|D_VERBOSE, "Setting SciTokens cache directory to %s\n", cache_loc.c_str());
+			char *err = nullptr;
+			if (scitoken_config_set_str_ptr("keycache.cache_home", cache_loc.c_str(), &err) < 0) {
+				dprintf(D_ALWAYS, "Failed to set SciTokens cache directory to %s: %s\n", cache_loc.c_str(), err);
+				free(err);
+			}
+		}
+	}
+
 	return g_init_success;
 }
 
@@ -241,6 +269,7 @@ htcondor::validate_scitoken(const std::string &scitoken_str, std::string &issuer
 		}
 	}
 
+	bool success = false;
 	SciToken token = nullptr;
 	char *err_msg = nullptr;
 	char *iss = nullptr;
@@ -250,6 +279,7 @@ htcondor::validate_scitoken(const std::string &scitoken_str, std::string &issuer
 	std::vector<std::string> audiences;
 	std::vector<const char *> audience_ptr;
 	std::string audience_string;
+	bool foreign_token = false;
 	if (param(audience_string, "SCITOKENS_SERVER_AUDIENCE")) {
 		StringList audience_list(audience_string.c_str());
 		audience_list.rewind();
@@ -258,8 +288,8 @@ htcondor::validate_scitoken(const std::string &scitoken_str, std::string &issuer
 			audiences.emplace_back(aud);
 			audience_ptr.push_back(audiences.back().c_str());
 		}
-		audience_ptr.push_back(nullptr);
 	}
+	audience_ptr.push_back(nullptr);
 	long long expiry_value;
 	if ((*scitoken_deserialize_ptr)(scitoken_str.c_str(), &token, nullptr, &err_msg)) {
 		err.pushf("SCITOKENS", 2, "Failed to deserialize scitoken: %s",
@@ -272,6 +302,7 @@ htcondor::validate_scitoken(const std::string &scitoken_str, std::string &issuer
 		free(err_msg);
 		(*scitoken_destroy_ptr)(token);
 		token = nullptr;
+		return false;
 	} else if ((*scitoken_get_claim_string_ptr)(token, "iss", &iss, &err_msg)) {
 		err.pushf("SCITOKENS", 2, "Unable to retrieve token issuer: %s",
 			err_msg ? err_msg : "(unknown failure)");
@@ -296,15 +327,40 @@ htcondor::validate_scitoken(const std::string &scitoken_str, std::string &issuer
 		free(sub);
 		return false;
 	} else if ((*enforcer_generate_acls_ptr)(enf, token, &acls, &err_msg)) {
-		err.pushf("SCITOKENS", 2, "Failed to verify token and generate ACLs: %s",
-			err_msg ? err_msg : "(unknown failure)");
-		free(err_msg);
-		(*scitoken_destroy_ptr)(token);
-		free(iss);
-		free(sub);
-		(*enforcer_destroy_ptr)(enf);
-		return false;
+		bool allow_foreign_token = false;
+		if (param_boolean("SEC_SCITOKENS_ALLOW_FOREIGN_TOKEN_TYPES", false)) {
+			std::string foreign_issuers;
+			param(foreign_issuers, "SEC_SCITOKENS_FOREIGN_TOKEN_ISSUERS");
+			if (foreign_issuers == "*") {
+				allow_foreign_token = true;
+			} else {
+				for (auto& s: StringTokenIterator(foreign_issuers)) {
+					if (s == iss) {
+						allow_foreign_token = true;
+						break;
+					}
+				}
+			}
+		}
+		if (allow_foreign_token) {
+			dprintf(D_SECURITY, "Token ACL generation failed, treating as foreign token type: %s\n", err_msg ? err_msg : "(unknown failure)");
+			foreign_token = true;
+			success = true;
+		} else {
+			err.pushf("SCITOKENS", 2, "Failed to verify token and generate ACLs: %s",
+				err_msg ? err_msg : "(unknown failure)");
+			free(err_msg);
+			(*scitoken_destroy_ptr)(token);
+			free(iss);
+			free(sub);
+			(*enforcer_destroy_ptr)(enf);
+			return false;
+		}
 	} else {
+		success = true;
+	}
+
+	if (success) {
 			// Success block - everything checks out!
 		std::vector<std::string> authz;
 		// add a "dummy" entry so the list is not empty.  empty could
@@ -328,12 +384,34 @@ htcondor::validate_scitoken(const std::string &scitoken_str, std::string &issuer
 
 		char *scopes_char = nullptr;
 		if (!(*scitoken_get_claim_string_ptr)(token, "scope", &scopes_char, nullptr)) {
+			bool compute_create = false;
+			bool compute_modify = false;
+			bool compute_cancel = false;
 			StringList scopes_list(scopes_char);
 			scopes_list.rewind();
 			free(scopes_char);
 			char *scope;
 			while ( (scope = scopes_list.next()) ) {
 				scopes.emplace_back(scope);
+				if (foreign_token) {
+					// With a foreign token, the ACLs above will be empty,
+					// so we need to search the scopes here for HTCondor
+					// authorization levels.
+					if (strncmp(scope, "condor:/", 8) == 0) {
+						authz.emplace_back(&scope[8]);
+					} else if (strcmp(scope, "compute.read") == 0) {
+						authz.emplace_back("READ");
+					} else if (strcmp(scope, "compute.create") == 0) {
+						compute_create = true;
+					} else if (strcmp(scope, "compute.modify") == 0) {
+						compute_modify = true;
+					} else if (strcmp(scope, "compute.cancel") == 0) {
+						compute_cancel = true;
+					}
+				}
+			}
+			if (compute_create && compute_modify && compute_cancel) {
+				authz.emplace_back("WRITE");
 			}
 		}
 

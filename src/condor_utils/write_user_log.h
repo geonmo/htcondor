@@ -98,18 +98,21 @@ class WriteUserLog
     /** Implementation detail        */  mutable bool copied;
     /** Whether to use user priv     */  bool user_priv_flag;
     /** Whether or not is DAGMan log */  bool is_dag_log;
+    /** Whether to fsync (fdatasync) */  bool should_fsync;
 
       // set of jobs that are using this log file
       log_file_cache_refset_t refset;
 
       log_file(const char* p) : path(p), lock(NULL), fd(-1),
-        copied(false), user_priv_flag(false), is_dag_log(false) {}
-      log_file() : lock(NULL), fd(-1), copied(false), user_priv_flag(false), is_dag_log(false) {}
+        copied(false), user_priv_flag(false), is_dag_log(false), should_fsync(true) {}
+      log_file() : lock(NULL), fd(-1), copied(false), user_priv_flag(false), is_dag_log(false), should_fsync(true) {}
       log_file(const log_file& orig);
       ~log_file(); 
       log_file& operator=(const log_file& rhs);
       void set_user_priv_flag(bool v) { user_priv_flag = v; }
       bool get_user_priv_flag() const { return user_priv_flag; }
+      void set_should_fsync(bool v) { should_fsync = v; }
+      bool get_should_fsync() const { return should_fsync;}
     };
 
     typedef std::map<std::string, log_file*> log_file_cache_map_t;
@@ -188,24 +191,14 @@ public:
 		@param was the event actually written (see above caution).
         @return false for failure, true for success
     */
-    bool writeEvent (ULogEvent *event, ClassAd *jobad = NULL,
+    bool writeEvent (ULogEvent *event, const ClassAd *jobad = NULL,
 					 bool *written = NULL );
 
 	/** This function is just like writeEvent(), but it ensures
 		that no call to fsync is made on the user log.
 	*/
-	bool writeEventNoFsync (ULogEvent *event, ClassAd *jobad = NULL,
+	bool writeEventNoFsync (ULogEvent *event, const ClassAd *jobad = NULL,
 							bool *written = NULL );
-
-	/**Control whether writeEvent() calls fsync.  This overrides the
-	   configured default ENABLE_USERLOG_FSYNC.  This only applies to
-	   the user log, not the global event log.
-	   @param enabled If true, enable fsync in writeEvent()
-	 */
-	void setEnableFsync(bool enabled);
-
-	/**@return false if disabled, true if enabled*/
-	bool getEnableFsync() const;
 
 	/** APIs for testing */
 	int getGlobalSequence( void ) const { return m_global_sequence; };
@@ -321,23 +314,24 @@ public:
     int         m_proc;
     int         m_subproc;
 
-	/** Write to the user log? */		 bool		m_userlog_enable;
+	/** Write to the user log? */	
+	bool		m_userlog_enable;
+
 	bool doWriteEvent( ULogEvent *event,
-		WriteUserLog::log_file& log,
+		const WriteUserLog::log_file& log,
 		bool is_global_event,
 		bool is_header_event,
-		int format_opts,
-		ClassAd *ad);
+		int format_opts);
 	void writeJobAdInfoEvent(char const *attrsToWrite,
-		WriteUserLog::log_file& log, ULogEvent *event, ClassAd *param_jobad,
+		WriteUserLog::log_file& log, ULogEvent *event, const ClassAd *param_jobad,
 		bool is_global_event, int format_opts );
 
 	std::vector<log_file*> logs;
     log_file_cache_map_t* log_file_cache;
 
-	bool doWriteGlobalEvent( ULogEvent *event, ClassAd *ad);
+	bool doWriteGlobalEvent(ULogEvent *event);
     /** Enable locking?              */  bool		m_enable_locking;
-	/** Enable fsync() after writes? */  bool       m_enable_fsync;
+	/** disable fsync for next event */  bool		m_skip_fsync_this_event;
 
 	/** Enable close after writes    */  bool       m_global_close;
 	/** Write to the global log? */		 bool		m_global_disable;
@@ -389,9 +383,3 @@ private:
 };
 
 #endif /* _CONDOR_USER_LOG_CPP_H */
-
-/*
-### Local Variables: ***
-### mode:C++ ***
-### End: **
-*/

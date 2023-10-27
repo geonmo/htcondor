@@ -24,7 +24,6 @@
 #include "condor_daemon_core.h"
 #include "condor_classad.h"
 #include "condor_state.h"
-#include "extArray.h"
 
 
 /**
@@ -117,8 +116,7 @@ public:
 
 protected:
 
-	ExtArray<BackfillSlot*> m_slots;
-	int m_num_slots;
+	std::vector<BackfillSlot*> m_slots;
 
 };
 

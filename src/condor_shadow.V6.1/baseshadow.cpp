@@ -272,7 +272,8 @@ BaseShadow::baseInit( ClassAd *job_ad, const char* schedd_addr, const char *xfer
 		startd->asyncRequestOpportunisticClaim(jobAd, 
 											   "description", 
 											   daemonCore->InfoCommandSinfulString(), 
-											   1200 /*alive interval*/, 
+											   1200 /*alive interval*/,
+											   false, /* don't claim pslot */
 											   20 /* net timeout*/, 
 											   100 /*total timeout*/, 
 											   cb);
@@ -611,6 +612,7 @@ BaseShadow::holdJobAndExit( const char* reason, int hold_reason_code, int hold_r
 {
 	m_force_fast_starter_shutdown = true;
 	holdJob(reason,hold_reason_code,hold_reason_subcode);
+	writeJobEpochFile(getJobAd());
 
 	// Doing this neither prevents scary network-level error messages in
 	// the starter log, nor actually works: if the shadow doesn't exit
@@ -699,7 +701,7 @@ void BaseShadow::removeJob( const char* reason )
 }
 
 void
-BaseShadow::retryJobCleanup( void )
+BaseShadow::retryJobCleanup()
 {
 	m_num_cleanup_retries++;
 	if (m_num_cleanup_retries > m_max_cleanup_retries) {
@@ -721,7 +723,7 @@ BaseShadow::retryJobCleanup( void )
 
 
 void
-BaseShadow::retryJobCleanupHandler( void )
+BaseShadow::retryJobCleanupHandler( int /* timerID */ )
 {
 	m_cleanup_retry_tid = -1;
 	dprintf(D_ALWAYS, "Retrying job cleanup, calling terminateJob()\n");
@@ -807,17 +809,20 @@ BaseShadow::terminateJob( update_style_t kind ) // has a default argument of US_
 	}
 
     // Update final Job committed time
-    int last_ckpt_time = 0;
-    jobAd->LookupInteger(ATTR_LAST_CKPT_TIME, last_ckpt_time);
-    int current_start_time = 0;
+    time_t last_ckpt_time = 0;
+    if(! jobAd->LookupInteger(ATTR_LAST_CKPT_TIME, last_ckpt_time)) {
+        jobAd->LookupInteger(ATTR_JOB_LAST_CHECKPOINT_TIME, last_ckpt_time);
+    }
+
+    time_t current_start_time = 0;
     jobAd->LookupInteger(ATTR_JOB_CURRENT_START_DATE, current_start_time);
-    int int_value = (last_ckpt_time > current_start_time) ?
+    time_t int_value = (last_ckpt_time > current_start_time) ?
                         last_ckpt_time : current_start_time;
 
     if( int_value > 0 && !m_committed_time_finalized ) {
         int job_committed_time = 0;
         jobAd->LookupInteger(ATTR_JOB_COMMITTED_TIME, job_committed_time);
-		int delta = (int)time(NULL) - int_value;
+		int delta = (int)(time(nullptr) - int_value);
         job_committed_time += delta;
         jobAd->Assign(ATTR_JOB_COMMITTED_TIME, job_committed_time);
 
@@ -920,7 +925,7 @@ BaseShadow::evictJob( int reason )
 	logEvictEvent( reason );
 
 		// record the time we were vacated into the job ad 
-	jobAd->Assign( ATTR_LAST_VACATE_TIME, (int)time(0) );
+	jobAd->Assign( ATTR_LAST_VACATE_TIME, time(nullptr) );
 
 		// update the job ad in the queue with some important final
 		// attributes so we know what happened to the job when using
@@ -1050,7 +1055,7 @@ static void set_usageAd (ClassAd* jobAd, ClassAd ** ppusageAd)
 			const int copy_ok = classad::Value::ERROR_VALUE | classad::Value::BOOLEAN_VALUE | classad::Value::INTEGER_VALUE | classad::Value::REAL_VALUE;
 			classad::Value value;
 			attr = res + "Provisioned";	 // provisioned value
-			if (jobAd->EvaluateAttr(attr, value) && (value.GetType() & copy_ok) != 0) {
+			if (jobAd->EvaluateAttr(attr, value, classad::Value::SCALAR_EX_VALUES) && (value.GetType() & copy_ok) != 0) {
 				classad::ExprTree * plit = classad::Literal::MakeLiteral(value);
 				if (plit) {
 					puAd->Insert(resname, plit); // usage ad has attribs like they appear in Machine ad
@@ -1058,7 +1063,7 @@ static void set_usageAd (ClassAd* jobAd, ClassAd ** ppusageAd)
 			}
 			// /*for debugging*/ else { puAd->Assign(resname, 42); }
 			attr = "Request"; attr += res;   	// requested value
-			if (jobAd->EvaluateAttr(attr, value)&& (value.GetType() & copy_ok) != 0) {
+			if (jobAd->EvaluateAttr(attr, value, classad::Value::SCALAR_EX_VALUES) && (value.GetType() & copy_ok) != 0) {
 				classad::ExprTree * plit = classad::Literal::MakeLiteral(value);
 				if (plit) {
 					puAd->Insert(attr, plit);
@@ -1067,7 +1072,7 @@ static void set_usageAd (ClassAd* jobAd, ClassAd ** ppusageAd)
 			// /*for debugging*/ else { puAd->Assign(attr, 99); }
 
 			attr = res + "Usage"; // (implicitly) peak usage value
-			if (jobAd->EvaluateAttr(attr, value) && (value.GetType() & copy_ok) != 0) {
+			if (jobAd->EvaluateAttr(attr, value, classad::Value::SCALAR_EX_VALUES) && (value.GetType() & copy_ok) != 0) {
 				classad::ExprTree * plit = classad::Literal::MakeLiteral(value);
 				if (plit) {
 					puAd->Insert(attr, plit);
@@ -1075,7 +1080,7 @@ static void set_usageAd (ClassAd* jobAd, ClassAd ** ppusageAd)
 			}
 
 			attr = res + "AverageUsage"; // average usage
-			if (jobAd->EvaluateAttr(attr, value) && (value.GetType() & copy_ok) != 0) {
+			if (jobAd->EvaluateAttr(attr, value, classad::Value::SCALAR_EX_VALUES) && (value.GetType() & copy_ok) != 0) {
 				classad::ExprTree * plit = classad::Literal::MakeLiteral(value);
 				if (plit) {
 					puAd->Insert(attr, plit);
@@ -1083,7 +1088,7 @@ static void set_usageAd (ClassAd* jobAd, ClassAd ** ppusageAd)
 			}
 
 			attr = res + "MemoryUsage"; // special case for GPUs.
-			if (jobAd->EvaluateAttr(attr, value) && (value.GetType() & copy_ok) != 0) {
+			if (jobAd->EvaluateAttr(attr, value, classad::Value::SCALAR_EX_VALUES) && (value.GetType() & copy_ok) != 0) {
 				classad::ExprTree * plit = classad::Literal::MakeLiteral(value);
 				if (plit) {
 					puAd->Insert(attr, plit);
@@ -1091,7 +1096,7 @@ static void set_usageAd (ClassAd* jobAd, ClassAd ** ppusageAd)
 			}
 
 			attr = res + "MemoryAverageUsage"; // just in case.
-			if (jobAd->EvaluateAttr(attr, value) && (value.GetType() & copy_ok) != 0) {
+			if (jobAd->EvaluateAttr(attr, value, classad::Value::SCALAR_EX_VALUES) && (value.GetType() & copy_ok) != 0) {
 				classad::ExprTree * plit = classad::Literal::MakeLiteral(value);
 				if (plit) {
 					puAd->Insert(attr, plit);
@@ -1100,6 +1105,17 @@ static void set_usageAd (ClassAd* jobAd, ClassAd ** ppusageAd)
 
 			attr = "Assigned"; attr += res;
 			CopyAttribute( attr, *puAd, *jobAd );
+		}
+
+		// Hard code a couple of useful time-based attributes that are not "Requested" yet
+		// and shorten their names to display more reasonably
+		int jaed = 0;
+		if (jobAd->LookupInteger(ATTR_JOB_ACTIVATION_EXECUTION_DURATION, jaed)) {
+			puAd->Assign("TimeExecuteUsage", jaed);
+		}
+		int jad = 0;
+		if (jobAd->LookupInteger(ATTR_JOB_ACTIVATION_DURATION, jad)) {
+			puAd->Assign("TimeSlotBusyUsage", jad);
 		}
 		*ppusageAd = puAd;
 	}
@@ -1176,7 +1192,7 @@ BaseShadow::logTerminateEvent( int exitReason, update_style_t kind )
 
 		if( exited_by_signal == TRUE ) {
 			jobAd->LookupString(ATTR_JOB_CORE_FILENAME, corefile);
-			event.setCoreFile( corefile.c_str() );
+			event.core_file = corefile;
 		}
 
 		classad::ClassAd * toeTag = dynamic_cast<classad::ClassAd *>(jobAd->Lookup(ATTR_JOB_TOE));
@@ -1230,8 +1246,8 @@ BaseShadow::logTerminateEvent( int exitReason, update_style_t kind )
 	event.total_recvd_bytes = prev_run_bytes_recvd + bytesSent();
 	event.total_sent_bytes = prev_run_bytes_sent + bytesReceived();
 
-	if( exitReason == JOB_COREDUMPED ) {
-		event.setCoreFile( core_file_name );
+	if( exitReason == JOB_COREDUMPED && core_file_name ) {
+		event.core_file = core_file_name;
 	}
 
 #if 1
@@ -1351,12 +1367,12 @@ BaseShadow::logRequeueEvent( const char* reason )
 		event.return_value = exitCode();
 	}
 			
-	if( exit_reason == JOB_COREDUMPED ) {
-		event.setCoreFile( core_file_name );
+	if( exit_reason == JOB_COREDUMPED && core_file_name ) {
+		event.core_file = core_file_name;
 	}
 
 	if( reason ) {
-		event.setReason( reason );
+		event.reason = reason;
 	}
 
 		// TODO: fill in local rusage
@@ -1444,7 +1460,7 @@ BaseShadow::log_except(const char *msg)
 		event.began_execution = TRUE;
 	}
 
-	if (!exception_already_logged && !shadow->uLog.writeEventNoFsync (&event,NULL))
+	if (!exception_already_logged && !shadow->uLog.writeEventNoFsync (&event,shadow->jobAd))
 	{
 		::dprintf (D_ALWAYS, "Failed to log ULOG_SHADOW_EXCEPTION event: %s\n", msg);
 	}

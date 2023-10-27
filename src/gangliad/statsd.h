@@ -66,6 +66,7 @@ public:
 	std::string cluster;
 	bool derivative;
 	int verbosity;
+	int lifetime;
     double scale;
 
 	enum MetricTypeEnum {
@@ -131,7 +132,7 @@ class StatsD: Service {
 	virtual void publishMetric(Metric const &metric) = 0;
 
 	// Collect ads from the collector and evaluate all metrics.
-	void publishMetrics();
+	void publishMetrics( int timerID = -1 );
 
 	// Given a machine name or daemon name, return the IP address of it,
 	// using information gathered from the collector.

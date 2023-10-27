@@ -47,8 +47,7 @@ bool logGahpIo = true;
 unsigned long logGahpIoSize = 0;
 int gahpResponseTimeout = 20;
 
-HashTable <std::string, GahpServer *>
-    GahpServer::GahpServersById( hashFunction );
+std::map <std::string, GahpServer *> GahpServer::GahpServersById;
 
 const int GahpServer::m_buffer_size = 4096;
 
@@ -82,10 +81,7 @@ void GahpReconfig()
 
 	tmp_int = param_integer( "GRIDMANAGER_MAX_PENDING_REQUESTS", 50 );
 
-	GahpServer *next_server = NULL;
-	GahpServer::GahpServersById.startIterations();
-
-	while ( GahpServer::GahpServersById.iterate( next_server ) != 0 ) {
+	for (auto& [key, next_server] : GahpServer::GahpServersById) {
 		next_server->max_pending_requests = tmp_int;
 			// TODO should we kick the server in the ass to submit any
 			//   unsubmitted requests?
@@ -112,22 +108,22 @@ GahpServer *GahpServer::FindOrCreateGahpServer(const char *id,
 											   const char *path,
 											   const ArgList *args)
 {
-	int rc;
 	GahpServer *server = NULL;
 
-	rc = GahpServersById.lookup( id, server );
-	if ( rc != 0 ) {
+	auto it = GahpServersById.find(id);
+	if (it == GahpServersById.end()) {
 		server = new GahpServer( id, path, args );
 		ASSERT(server);
-		GahpServersById.insert( id, server );
+		GahpServersById[id] = server;
 	} else {
-		ASSERT(server);
+		server = it->second;
 	}
 
 	return server;
 }
 
 GahpServer::GahpServer(const char *id, const char *path, const ArgList *args)
+	: m_setCondorInherit(false)
 {
 	m_gahp_pid = -1;
 	m_gahp_startup_failed = false;
@@ -138,23 +134,18 @@ GahpServer::GahpServer(const char *id, const char *path, const ArgList *args)
 	m_gahp_real_errorfd = -1;
 	m_gahp_error_buffer = "";
 	m_reference_count = 0;
-	m_commands_supported = NULL;
 	m_pollInterval = 5;
 	poll_tid = -1;
 	max_pending_requests = param_integer( "GRIDMANAGER_MAX_PENDING_REQUESTS", 50 );
 	num_pending_requests = 0;
 	poll_pending = false;
 	use_prefix = false;
-	requestTable = NULL;
 	current_proxy = NULL;
 	skip_next_r = false;
 	m_deleteMeTid = TIMER_UNSET;
 
 	next_reqid = 1;
 	rotated_reqids = false;
-
-	requestTable = new HashTable<int,GenericGahpClient*>( &hashFuncInt );
-	ASSERT(requestTable);
 
 	m_ssh_forward_port = 0;
 	my_id = strdup(id);
@@ -166,7 +157,6 @@ GahpServer::GahpServer(const char *id, const char *path, const ArgList *args)
 	master_proxy = NULL;
 	is_initialized = false;
 	can_cache_proxies = false;
-	ProxiesByFilename = NULL;
 
 	m_gahp_version[0] = '\0';
 	m_buffer_pos = 0;
@@ -178,13 +168,12 @@ GahpServer::GahpServer(const char *id, const char *path, const ArgList *args)
 GahpServer::~GahpServer()
 {
 	if ( my_id != NULL ) {
-		GahpServersById.remove( my_id );
+		GahpServersById.erase(my_id);
 	}
 	if ( m_deleteMeTid != TIMER_UNSET ) {
 		daemonCore->Cancel_Timer( m_deleteMeTid );
 	}
 	free( m_buffer );
-	delete m_commands_supported;
 	if ( my_id != NULL ) {
 		free(my_id);
 	}
@@ -204,32 +193,22 @@ GahpServer::~GahpServer()
 		daemonCore->Cancel_Timer( poll_tid );
 	}
 	if ( master_proxy != NULL ) {
-		ReleaseProxy( master_proxy->proxy, (TimerHandlercpp)&GahpServer::ProxyCallback,
+		ReleaseProxy( master_proxy->proxy, (CallbackType)&GahpServer::ProxyCallback,
 					  this );
 		delete master_proxy;
 	}
 	if ( proxy_check_tid != TIMER_UNSET ) {
 		daemonCore->Cancel_Timer( proxy_check_tid );
 	}
-	if ( ProxiesByFilename != NULL ) {
-		GahpProxyInfo *gahp_proxy;
-
-		ProxiesByFilename->startIterations();
-		while ( ProxiesByFilename->iterate( gahp_proxy ) != 0 ) {
-			ReleaseProxy( gahp_proxy->proxy,
-						  (TimerHandlercpp)&GahpServer::ProxyCallback, this );
-			delete gahp_proxy;
-		}
-
-		delete ProxiesByFilename;
-	}
-	if ( requestTable != NULL ) {
-		delete requestTable;
+	for (auto& [key, gahp_proxy] : ProxiesByFilename) {
+		ReleaseProxy(gahp_proxy->proxy,
+		             (CallbackType)&GahpServer::ProxyCallback, this);
+		delete gahp_proxy;
 	}
 }
 
 void
-GahpServer::DeleteMe()
+GahpServer::DeleteMe( int /* timerID */ )
 {
 	m_deleteMeTid = TIMER_UNSET;
 
@@ -252,12 +231,9 @@ GahpServer::GahpStatistics::GahpStatistics()
 	Pool.SetRecentMax( RecentWindowMax, RecentWindowQuantum );
 }
 
-void GahpServer::GahpStatistics::Tick()
+void GahpServer::GahpStatistics::Tick(int /* tid */)
 {
-	GahpServer *next_server = NULL;
-	GahpServer::GahpServersById.startIterations();
-
-	while ( GahpServer::GahpServersById.iterate( next_server ) != 0 ) {
+	for (auto& [key, next_server] : GahpServer::GahpServersById) {
 		next_server->m_stats.Pool.Advance( 1 );
 	}
 }
@@ -310,7 +286,7 @@ GahpServer::write_line(const char *command, int req, const char *args) const
 	}
 
 	char buf[20];
-	sprintf(buf," %d%s",req,args?" ":"");
+	snprintf(buf,sizeof(buf)," %d%s",req,args?" ":"");
 	daemonCore->Write_Pipe(m_gahp_writefd,command,strlen(command));
 	daemonCore->Write_Pipe(m_gahp_writefd,buf,strlen(buf));
 	if ( args ) {
@@ -343,10 +319,8 @@ GahpServer::Reaper(int pid,int status)
 	   goes away for any reason, we EXCEPT. */
 
 	GahpServer *dead_server = NULL;
-	GahpServer *next_server = NULL;
 
-	GahpServersById.startIterations();
-	while ( GahpServersById.iterate( next_server ) != 0 ) {
+	for (auto& [key, next_server] : GahpServersById) {
 		if ( pid == next_server->m_gahp_pid ) {
 			dead_server = next_server;
 			break;
@@ -368,7 +342,7 @@ GahpServer::Reaper(int pid,int status)
 		if ( !dead_server->m_sec_session_id.empty() ) {
 			SecMan *secman = daemonCore->getSecMan();
 			IpVerify *ipv = secman->getIpVerify();
-			secman->session_cache->remove( dead_server->m_sec_session_id.c_str() );
+			secman->session_cache->erase(dead_server->m_sec_session_id);
 			ipv->FillHole(DAEMON, CONDOR_CHILD_FQU);
 			ipv->FillHole(CLIENT_PERM, CONDOR_CHILD_FQU);
 		}
@@ -659,13 +633,12 @@ int
 GahpServer::new_reqid()
 {
 	int starting_reqid;
-	GenericGahpClient* unused;
 
 	starting_reqid  = next_reqid;
 	
 	next_reqid++;
 	while (starting_reqid != next_reqid) {
-		if ( next_reqid > 990000000 ) {
+		if ( next_reqid > 990'000'000 ) {
 			next_reqid = 1;
 			rotated_reqids = true;
 		}
@@ -673,7 +646,7 @@ GahpServer::new_reqid()
 			// Optimization: only need to do the lookup if we have
 			// rotated request ids...
 		if ( (!rotated_reqids) || 
-			 (requestTable->lookup(next_reqid,unused) == -1) ) {
+			 (requestTable.find(next_reqid) == requestTable.end()) ) {
 				// not in use, we are done
 			return next_reqid;
 		}
@@ -710,23 +683,27 @@ GahpServer::RemoveGahpClient()
 }
 
 bool
-GenericGahpClient::Startup()
+GenericGahpClient::Startup(bool force)
 {
-	return server->Startup();
+	return server->Startup(force);
 }
 
 bool
-GahpServer::Startup()
+GahpServer::Startup(bool force)
 {
-	char *gahp_path = NULL;
 	ArgList gahp_args;
 	int stdin_pipefds[2] = { -1, -1 };
 	int stdout_pipefds[2] = { -1, -1 };
 	int stderr_pipefds[2] = { -1, -1 };
 	Env newenv;
 	char *tmp_char;
+	int job_opt_mask = 0;
 
-		// Check if we already have spawned a GAHP server.  
+		// Check if we already have spawned a GAHP server.
+	if (m_gahp_startup_failed && force) {
+		m_gahp_startup_failed = false;
+		m_gahp_pid = -1;
+	}
 	if ( m_gahp_startup_failed ) {
 			// Previous attempt to start GAHP failed. Don't retry...
 		return false;
@@ -741,11 +718,10 @@ GahpServer::Startup()
 		dprintf(D_ALWAYS, "No path to start gahp id '%s'\n", my_id);
 		return false;
 	}
-	gahp_path = binary_path;
 	gahp_args.AppendArgsFromArgList(binary_args);
 
 	// Insert binary_path as argv[0] for Create_Process().
-	gahp_args.InsertArg( gahp_path, 0);
+	gahp_args.InsertArg( binary_path, 0);
 
 	newenv.SetEnv( "GAHP_TEMP", GridmanagerScratchDir );
 
@@ -824,8 +800,14 @@ GahpServer::Startup()
 	io_redirect[1] = stdout_pipefds[1]; // stdout get write side of out pipe
 	io_redirect[2] = stderr_pipefds[1]; // stderr get write side of err pipe
 
+
+	// Don't set CONDOR_INHERIT in the GAHP's environment, unless requested
+	if (!m_setCondorInherit) {
+		job_opt_mask = DCJOBOPT_NO_CONDOR_ENV_INHERIT;
+	}
+
 	m_gahp_pid = daemonCore->Create_Process(
-			gahp_path,		// Name of executable
+			binary_path,	// Name of executable
 			gahp_args,		// Args
 			PRIV_USER_FINAL,// Priv State ---- drop root if we have it
 			m_reaperid,		// id for our registered reaper
@@ -835,12 +817,16 @@ GahpServer::Startup()
 			NULL,			// cwd
 			NULL,			// process family info
 			NULL,			// network sockets to inherit
-			io_redirect 	// redirect stdin/out/err
+			io_redirect, 	// redirect stdin/out/err
+			nullptr,		// fd inherit list
+			0,				// nice increment
+			nullptr,		// signal mask
+			job_opt_mask	// job option flags
 			);
 
 	if ( m_gahp_pid == FALSE ) {
 		dprintf(D_ALWAYS,"Failed to start GAHP server (%s)\n",
-				gahp_path);
+				binary_path);
 		m_gahp_pid = -1;
 		goto error_exit;
 	} else {
@@ -914,9 +900,9 @@ GahpServer::Startup()
 	}
 		
 		// See if this gahp server can cache multiple proxies
-	if ( m_commands_supported->contains_anycase("CACHE_PROXY_FROM_FILE")==TRUE &&
-		 m_commands_supported->contains_anycase("UNCACHE_PROXY")==TRUE &&
-		 m_commands_supported->contains_anycase("USE_CACHED_PROXY")==TRUE ) {
+	if ( contains_anycase(m_commands_supported, "CACHE_PROXY_FROM_FILE") &&
+		 contains_anycase(m_commands_supported, "UNCACHE_PROXY") &&
+		 contains_anycase(m_commands_supported, "USE_CACHED_PROXY") ) {
 		can_cache_proxies = true;
 	}
 
@@ -925,7 +911,6 @@ GahpServer::Startup()
  error_exit:
 	m_gahp_startup_failed = true;
 
-	free( gahp_path );
 	if ( stdin_pipefds[0] != -1 ) {
 		daemonCore->Close_Pipe( stdin_pipefds[0] );
 	}
@@ -977,7 +962,7 @@ GahpServer::Initialize( Proxy *proxy )
 
 	master_proxy = new GahpProxyInfo;
 	master_proxy->proxy = proxy->subject->master_proxy;
-	AcquireProxy( master_proxy->proxy, (TimerHandlercpp)&GahpServer::ProxyCallback,
+	AcquireProxy( master_proxy->proxy, (CallbackType)&GahpServer::ProxyCallback,
 				  this );
 	master_proxy->cached_expiration = 0;
 
@@ -985,7 +970,7 @@ GahpServer::Initialize( Proxy *proxy )
 
 		// It's possible for a gahp to support the proxy caching commands
 		// but not INITIALIZE_FROM_FILE
-	if ( m_commands_supported->contains_anycase( "INITIALIZE_FROM_FILE" ) ) {
+	if ( contains_anycase(m_commands_supported, "INITIALIZE_FROM_FILE") ) {
 		if ( command_initialize_from_file( master_proxy->proxy->proxy_filename ) == false ) {
 			dprintf( D_ALWAYS, "GAHP: Failed to initialize from file\n" );
 			return false;
@@ -999,9 +984,6 @@ GahpServer::Initialize( Proxy *proxy )
 			dprintf( D_ALWAYS, "GAHP: Failed to cache proxy from file!\n" );
 			return false;
 		}
-
-		ProxiesByFilename = new HashTable<std::string,GahpProxyInfo*>( hashFunction );
-		ASSERT(ProxiesByFilename);
 	}
 
 	master_proxy->cached_expiration = master_proxy->proxy->expiration_time;
@@ -1047,7 +1029,7 @@ GahpServer::CreateSecuritySession()
 	}
 
 		// Check if this command is supported
-	if  (m_commands_supported->contains_anycase(command)==FALSE) {
+	if  (contains_anycase(m_commands_supported, command)==false) {
 		return false;
 	}
 
@@ -1099,7 +1081,7 @@ GahpServer::CreateSecuritySession()
 			reason = "Unspecified error";
 		}
 		dprintf( D_ALWAYS, "GAHP command '%s' failed: %s\n", command, reason );
-		secman->session_cache->remove( claimId.secSessionId() );
+		secman->session_cache->erase(claimId.secSessionId());
 		return false;
 	}
 
@@ -1133,7 +1115,7 @@ GahpServer::command_cache_proxy_from_file( GahpProxyInfo *new_proxy )
 	ASSERT(new_proxy);		// Gotta have it...
 
 		// Check if this command is supported
-	if  (m_commands_supported->contains_anycase(command)==FALSE) {
+	if  (contains_anycase(m_commands_supported, command)==false) {
 		return false;
 	}
 
@@ -1165,7 +1147,7 @@ GahpServer::uncacheProxy( GahpProxyInfo *gahp_proxy )
 	static const char *command = "UNCACHE_PROXY";
 
 		// Check if this command is supported
-	if  (m_commands_supported->contains_anycase(command)==FALSE) {
+	if  (contains_anycase(m_commands_supported, command)==false) {
 		return false;
 	}
 
@@ -1236,7 +1218,7 @@ GahpServer::command_use_cached_proxy( GahpProxyInfo *new_proxy )
 	static const char *command = "USE_CACHED_PROXY";
 
 		// Check if this command is supported
-	if  (m_commands_supported->contains_anycase(command)==FALSE) {
+	if (contains_anycase(m_commands_supported, command)==false) {
 		return false;
 	}
 
@@ -1276,7 +1258,7 @@ GahpServer::ProxyCallback()
 }
 
 void
-GahpServer::doProxyCheck()
+GahpServer::doProxyCheck( int /* timerID */ )
 {
 	proxy_check_tid = TIMER_UNSET;
 
@@ -1284,22 +1266,14 @@ GahpServer::doProxyCheck()
 		return;
 	}
 
-	GahpProxyInfo *next_proxy;
+	for (auto& [key, next_proxy] : ProxiesByFilename) {
+		if ( next_proxy->proxy->expiration_time >
+			 next_proxy->cached_expiration ) {
 
-	if ( ProxiesByFilename ) {
-		ProxiesByFilename->startIterations();
-		while ( ProxiesByFilename->iterate( next_proxy ) != 0 ) {
-
-			if ( next_proxy->proxy->expiration_time >
-				 next_proxy->cached_expiration ) {
-
-				if ( cacheProxyFromFile( next_proxy ) == false ) {
-					EXCEPT( "Failed to refresh proxy!" );
-				}
-				next_proxy->cached_expiration = next_proxy->proxy->expiration_time;
-
+			if ( cacheProxyFromFile( next_proxy ) == false ) {
+				EXCEPT( "Failed to refresh proxy!" );
 			}
-
+			next_proxy->cached_expiration = next_proxy->proxy->expiration_time;
 		}
 	}
 
@@ -1309,7 +1283,7 @@ GahpServer::doProxyCheck()
 			// It's possible for a gahp to support the proxy caching
 			// commands but not REFRESH_PROXY_FROM_FILE
 		static const char *command = "REFRESH_PROXY_FROM_FILE";
-		if ( m_commands_supported->contains_anycase( command ) ) {
+		if ( contains_anycase(m_commands_supported, command) ) {
 			if ( command_initialize_from_file(
 										master_proxy->proxy->proxy_filename,
 										command) == false ) {
@@ -1330,10 +1304,9 @@ GahpServer::doProxyCheck()
 GahpProxyInfo *
 GahpServer::RegisterProxy( Proxy *proxy )
 {
-	int rc;
 	GahpProxyInfo *gahp_proxy = NULL;
 
-	if ( ProxiesByFilename == NULL || proxy == NULL ||
+	if ( is_initialized == false || proxy == NULL ||
 		 can_cache_proxies == false ) {
 
 		return NULL;
@@ -1344,13 +1317,12 @@ GahpServer::RegisterProxy( Proxy *proxy )
 		return master_proxy;
 	}
 
-	rc = ProxiesByFilename->lookup( proxy->proxy_filename, gahp_proxy );
-
-	if ( rc != 0 ) {
+	auto it = ProxiesByFilename.find(proxy->proxy_filename);
+	if (it == ProxiesByFilename.end()) {
 		gahp_proxy = new GahpProxyInfo;
 		ASSERT(gahp_proxy);
 		gahp_proxy->proxy = AcquireProxy( proxy,
-										  (TimerHandlercpp)&GahpServer::ProxyCallback,
+										  (CallbackType)&GahpServer::ProxyCallback,
 										  this );
 		gahp_proxy->cached_expiration = 0;
 		gahp_proxy->num_references = 1;
@@ -1359,9 +1331,9 @@ GahpServer::RegisterProxy( Proxy *proxy )
 		}
 		gahp_proxy->cached_expiration = gahp_proxy->proxy->expiration_time;
 
-		ProxiesByFilename->insert( proxy->proxy_filename, gahp_proxy );
+		ProxiesByFilename[proxy->proxy_filename] = gahp_proxy;
 	} else {
-		gahp_proxy->num_references++;
+		it->second->num_references++;
 	}
 
 	return gahp_proxy;
@@ -1370,10 +1342,9 @@ GahpServer::RegisterProxy( Proxy *proxy )
 void
 GahpServer::UnregisterProxy( Proxy *proxy )
 {
-	int rc;
 	GahpProxyInfo *gahp_proxy = NULL;
 
-	if ( ProxiesByFilename == NULL || proxy == NULL ||
+	if ( is_initialized == false || proxy == NULL ||
 		 can_cache_proxies == false ) {
 
 		return;
@@ -1384,19 +1355,20 @@ GahpServer::UnregisterProxy( Proxy *proxy )
 		return;
 	}
 
-	rc = ProxiesByFilename->lookup( proxy->proxy_filename, gahp_proxy );
+	auto it = ProxiesByFilename.find(proxy->proxy_filename);
 
-	if ( rc != 0 ) {
+	if (it == ProxiesByFilename.end()) {
 		dprintf( D_ALWAYS, "GahpServer::UnregisterProxy() called with unknown proxy %s\n", proxy->proxy_filename );
 		return;
 	}
 
+	gahp_proxy = it->second;
 	gahp_proxy->num_references--;
 
 	if ( gahp_proxy->num_references == 0 ) {
-		ProxiesByFilename->remove( gahp_proxy->proxy->proxy_filename );
+		ProxiesByFilename.erase(gahp_proxy->proxy->proxy_filename);
 		uncacheProxy( gahp_proxy );
-		ReleaseProxy( gahp_proxy->proxy, (TimerHandlercpp)&GahpServer::ProxyCallback,
+		ReleaseProxy( gahp_proxy->proxy, (CallbackType)&GahpServer::ProxyCallback,
 					  this );
 		delete gahp_proxy;
 	}
@@ -1719,7 +1691,7 @@ GahpServer::command_response_prefix(const char *prefix)
 {
 	static const char* command = "RESPONSE_PREFIX";
 
-	if  (m_commands_supported->contains_anycase(command)==FALSE) {
+	if  (contains_anycase(m_commands_supported, command)==false) {
 		return false;
 	}
 
@@ -1743,7 +1715,7 @@ GahpServer::command_async_mode_on()
 {
 	static const char* command = "ASYNC_MODE_ON";
 
-	if  (m_commands_supported->contains_anycase(command)==FALSE) {
+	if (contains_anycase(m_commands_supported, command)==false) {
 		return false;
 	}
 
@@ -1770,14 +1742,9 @@ GahpServer::command_commands()
 		return false;
 	}
 
-	if ( m_commands_supported ) {
-		delete m_commands_supported;
-		m_commands_supported = NULL;
-	}
-	m_commands_supported = new StringList();
-	ASSERT(m_commands_supported);
+	m_commands_supported.clear();
 	for ( int i = 1; i < result.argc; i++ ) {
-		m_commands_supported->append(result.argv[i]);
+		m_commands_supported.emplace_back(result.argv[i]);
 	}
 
 	return true;
@@ -1826,7 +1793,7 @@ GahpServer::command_condor_version()
 	static const char *command = "CONDOR_VERSION";
 
 		// Check if this command is supported
-	if ( m_commands_supported->contains_anycase( command ) == FALSE ) {
+	if ( contains_anycase(m_commands_supported, command) == false ) {
 		return false;
 	}
 
@@ -1870,13 +1837,13 @@ GenericGahpClient::clear_pending()
 {
 	if ( pending_reqid ) {
 			// remove from hashtable
-		if (server->requestTable->remove(pending_reqid) == 0) {
+		if (server->requestTable.erase(pending_reqid) != 0) {
 				// entry was still in the hashtable, which means
 				// that this reqid is still with the gahp server or
 				// still in our waitingHigh/Medium/LowPrio queues.
 				// so re-insert an entry with this pending_reqid
 				// with a NULL data field so we do not reuse this reqid.
-			server->requestTable->insert(pending_reqid,NULL);
+			server->requestTable[pending_reqid] = nullptr;
 		}
 	}
 	pending_reqid = 0;
@@ -1900,7 +1867,7 @@ GenericGahpClient::clear_pending()
 }
 
 void
-GenericGahpClient::reset_user_timer_alarm()
+GenericGahpClient::reset_user_timer_alarm( int /* timerID */ )
 {
 	reset_user_timer(pending_timeout_tid);
 }
@@ -1951,7 +1918,7 @@ GenericGahpClient::now_pending(const char *command,const char *buf,
 		}
 		pending_proxy = cmd_proxy;
 			// add new reqid to hashtable
-		server->requestTable->insert(pending_reqid,this);
+		server->requestTable[pending_reqid] = this;
 	}
 	ASSERT( pending_command != NULL );
 
@@ -2024,7 +1991,7 @@ GenericGahpClient::get_pending_result(const char *,const char *)
 		// Handle blocking mode if enabled
 	if ( (m_mode == blocking) && (!pending_result) ) {
 		for (;;) {
-			server->poll();
+			server->poll(-1);
 			if ( pending_result ) {
 					// We got the result, stop blocking
 				break;
@@ -2050,11 +2017,10 @@ GenericGahpClient::get_pending_result(const char *,const char *)
 }
 
 void
-GahpServer::poll()
+GahpServer::poll( int /* timerID */ )
 {
 	Gahp_Args* result = NULL;
 	int num_results = 0;
-	int result_reqid;
 	GenericGahpClient* entry;
 	std::vector<Gahp_Args*> result_lines;
 
@@ -2116,7 +2082,7 @@ GahpServer::poll()
 		if ( result ) delete result;
 		result = result_line;
 
-		result_reqid = 0;
+		int result_reqid = 0;
 		if ( result->argc > 0 ) {
 			result_reqid = atoi(result->argv[0]);
 		}
@@ -2128,7 +2094,10 @@ GahpServer::poll()
 
 			// Now lookup in our hashtable....
 		entry = NULL;
-		requestTable->lookup(result_reqid,entry);
+		auto it = requestTable.find(result_reqid);
+		if (it != requestTable.end()) {
+			entry = it->second;
+		}
 		if ( entry ) {
 				// found the entry!  stash the result
 			entry->pending_result = result;
@@ -2147,7 +2116,7 @@ GahpServer::poll()
 			entry->pending_submitted_to_gahp = 0;
 		}
 			// clear entry from our hashtable so we can reuse the reqid
-		requestTable->remove(result_reqid);
+		requestTable.erase(result_reqid);
 
 	}	// end of looping through each result line
 
@@ -2175,7 +2144,10 @@ GahpServer::poll()
 		}
 		m_stats.CommandsQueued -= 1;
 		entry = NULL;
-		requestTable->lookup(waiting_reqid,entry);
+		auto it = requestTable.find(waiting_reqid);
+		if (it != requestTable.end()) {
+			entry = it->second;
+		}
 		if ( entry ) {
 			ASSERT(entry->pending_reqid == waiting_reqid);
 				// Try to send this request to the gahp.
@@ -2187,7 +2159,7 @@ GahpServer::poll()
 				// it is dequeued from the waitingHigh/Medium/Low queues.
 				// So now remove the entry from the hash table
 				// so the reqid can be reused.
-			requestTable->remove(result_reqid);
+			requestTable.erase(waiting_reqid);
 		}
 	}
 }
@@ -2227,7 +2199,7 @@ GahpClient::condor_job_submit(const char *schedd_name, ClassAd *job_ad,
 	std::string ad_string;
 
 		// Check if this command is supported
-	if  (server->m_commands_supported->contains_anycase(command)==FALSE) {
+	if (contains_anycase(server->m_commands_supported, command)==false) {
 		return GAHPCLIENT_COMMAND_NOT_SUPPORTED;
 	}
 
@@ -2305,7 +2277,7 @@ GahpClient::condor_job_update_constrained(const char *schedd_name,
 	std::string ad_string;
 
 		// Check if this command is supported
-	if  (server->m_commands_supported->contains_anycase(command)==FALSE) {
+	if (contains_anycase(server->m_commands_supported, command)==false) {
 		return GAHPCLIENT_COMMAND_NOT_SUPPORTED;
 	}
 
@@ -2381,7 +2353,7 @@ GahpClient::condor_job_status_constrained(const char *schedd_name,
 	static const char* command = "CONDOR_JOB_STATUS_CONSTRAINED";
 
 		// Check if this command is supported
-	if  (server->m_commands_supported->contains_anycase(command)==FALSE) {
+	if (contains_anycase(server->m_commands_supported, command)==false) {
 		return GAHPCLIENT_COMMAND_NOT_SUPPORTED;
 	}
 
@@ -2472,7 +2444,7 @@ GahpClient::condor_job_remove(const char *schedd_name, PROC_ID job_id,
 	static const char* command = "CONDOR_JOB_REMOVE";
 
 		// Check if this command is supported
-	if  (server->m_commands_supported->contains_anycase(command)==FALSE) {
+	if  (contains_anycase(server->m_commands_supported, command)==false) {
 		return GAHPCLIENT_COMMAND_NOT_SUPPORTED;
 	}
 
@@ -2542,7 +2514,7 @@ GahpClient::condor_job_update(const char *schedd_name, PROC_ID job_id,
 	std::string ad_string;
 
 		// Check if this command is supported
-	if  (server->m_commands_supported->contains_anycase(command)==FALSE) {
+	if (contains_anycase(server->m_commands_supported, command)==false) {
 		return GAHPCLIENT_COMMAND_NOT_SUPPORTED;
 	}
 
@@ -2615,7 +2587,7 @@ GahpClient::condor_job_hold(const char *schedd_name, PROC_ID job_id,
 	static const char* command = "CONDOR_JOB_HOLD";
 
 		// Check if this command is supported
-	if  (server->m_commands_supported->contains_anycase(command)==FALSE) {
+	if (contains_anycase(server->m_commands_supported, command)==false) {
 		return GAHPCLIENT_COMMAND_NOT_SUPPORTED;
 	}
 
@@ -2683,7 +2655,7 @@ GahpClient::condor_job_release(const char *schedd_name, PROC_ID job_id,
 	static const char* command = "CONDOR_JOB_RELEASE";
 
 		// Check if this command is supported
-	if  (server->m_commands_supported->contains_anycase(command)==FALSE) {
+	if (contains_anycase(server->m_commands_supported, command)==false) {
 		return GAHPCLIENT_COMMAND_NOT_SUPPORTED;
 	}
 
@@ -2752,7 +2724,7 @@ GahpClient::condor_job_stage_in(const char *schedd_name, ClassAd *job_ad)
 	std::string ad_string;
 
 		// Check if this command is supported
-	if  (server->m_commands_supported->contains_anycase(command)==FALSE) {
+	if (contains_anycase(server->m_commands_supported, command)==false) {
 		return GAHPCLIENT_COMMAND_NOT_SUPPORTED;
 	}
 
@@ -2823,7 +2795,7 @@ GahpClient::condor_job_stage_out(const char *schedd_name, PROC_ID job_id)
 	static const char* command = "CONDOR_JOB_STAGE_OUT";
 
 		// Check if this command is supported
-	if  (server->m_commands_supported->contains_anycase(command)==FALSE) {
+	if (contains_anycase(server->m_commands_supported, command)==false) {
 		return GAHPCLIENT_COMMAND_NOT_SUPPORTED;
 	}
 
@@ -2887,7 +2859,7 @@ GahpClient::condor_job_refresh_proxy(const char *schedd_name, PROC_ID job_id,
 	static const char* command = "CONDOR_JOB_REFRESH_PROXY";
 
 		// Check if this command is supported
-	if  (server->m_commands_supported->contains_anycase(command)==FALSE) {
+	if (contains_anycase(server->m_commands_supported, command)==false) {
 		return GAHPCLIENT_COMMAND_NOT_SUPPORTED;
 	}
 
@@ -2897,8 +2869,8 @@ GahpClient::condor_job_refresh_proxy(const char *schedd_name, PROC_ID job_id,
 	std::string reqline;
 	char *esc1 = strdup( escapeGahpString(schedd_name) );
 	char *esc2 = strdup( escapeGahpString(proxy_file) );
-	int x = formatstr(reqline, "%s %d.%d %s %d", esc1, job_id.cluster, job_id.proc,
-					  esc2, (int)proxy_expiration);
+	int x = formatstr(reqline, "%s %d.%d %s %lld", esc1, job_id.cluster, job_id.proc,
+					  esc2, (long long)proxy_expiration);
 	free(esc1);
 	free(esc2);
 	ASSERT( x > 0 );
@@ -2950,35 +2922,34 @@ GahpClient::condor_job_refresh_proxy(const char *schedd_name, PROC_ID job_id,
 
 int
 GahpClient::condor_job_update_lease(const char *schedd_name,
-									const SimpleList<PROC_ID> &jobs,
-									const SimpleList<int> &expirations,
-									SimpleList<PROC_ID> &updated )
+                                    const std::vector<PROC_ID> &jobs,
+                                    const std::vector<int> &expirations,
+                                    std::vector<PROC_ID> &updated )
 {
 	static const char* command = "CONDOR_JOB_UPDATE_LEASE";
 
 		// Check if this command is supported
-	if  (server->m_commands_supported->contains_anycase(command)==FALSE) {
+	if (contains_anycase(server->m_commands_supported, command)==false) {
 		return GAHPCLIENT_COMMAND_NOT_SUPPORTED;
 	}
 
-	ASSERT( jobs.Length() == expirations.Length() );
+	ASSERT( jobs.size() == expirations.size() );
 
 		// Generate request line
 	if (!schedd_name) schedd_name=NULLSTRING;
 	std::string reqline;
 	char *esc1 = strdup( escapeGahpString(schedd_name) );
-	int x = formatstr(reqline, "%s %d", esc1, jobs.Length());
+	int x = formatstr(reqline, "%s %zu", esc1, jobs.size());
 	free( esc1 );
 	ASSERT( x > 0 );
 		// Add variable arguments
-	SimpleListIterator<PROC_ID> jobs_i (jobs);
-	SimpleListIterator<int> exps_i (expirations);
-	PROC_ID next_job;
-	int next_exp;
-	while ( jobs_i.Next( next_job ) && exps_i.Next( next_exp ) ) {
-		x = formatstr_cat( reqline, " %d.%d %d", next_job.cluster, next_job.proc,
-								 next_exp );
-		ASSERT( x > 0 );
+	auto jobs_i = jobs.begin();
+	auto exps_i = expirations.begin();
+	while (jobs_i != jobs.end() && exps_i != expirations.end()) {
+		formatstr_cat(reqline, " %d.%d %d", jobs_i->cluster, jobs_i->proc,
+		              *exps_i);
+		jobs_i++;
+		exps_i++;
 	}
 	const char *buf = reqline.c_str();
 
@@ -3011,7 +2982,7 @@ GahpClient::condor_job_update_lease(const char *schedd_name,
 		} else {
 			error_string = "";
 		}
-		updated.Clear();
+		updated.clear();
 		char *ptr1 = result->argv[3];
 		while ( ptr1 != NULL && *ptr1 != '\0' ) {
 			int i;
@@ -3025,9 +2996,69 @@ GahpClient::condor_job_update_lease(const char *schedd_name,
 			if ( i != 2 ) {
 				dprintf( D_ALWAYS, "condor_job_update_lease: skipping malformed job id '%s'\n", ptr1 );
 			} else {
-				updated.Append( job_id );
+				updated.emplace_back(job_id);
 			}
 			ptr1 = ptr2;
+		}
+		delete result;
+		return rc;
+	}
+
+		// Now check if pending command timed out.
+	if ( check_pending_timeout(command,buf) ) {
+		// pending command timed out.
+		formatstr( error_string, "%s timed out", command );
+		return GAHPCLIENT_COMMAND_TIMED_OUT;
+	}
+
+		// If we made it here, command is still pending...
+	return GAHPCLIENT_COMMAND_PENDING;
+}
+
+int
+GahpClient::blah_ping(const std::string& lrms)
+{
+	static const char* command = "BLAH_PING";
+
+		// Check if this command is supported
+	if (contains_anycase(server->m_commands_supported, command)==false) {
+		return GAHPCLIENT_COMMAND_NOT_SUPPORTED;
+	}
+
+		// Generate request line
+	std::string reqline;
+	if (lrms.empty()) {
+		reqline = NULLSTRING;
+	} else {
+		formatstr( reqline, "%s", escapeGahpString(lrms) );
+	}
+	const char *buf = reqline.c_str();
+
+		// Check if this request is currently pending.  If not, make
+		// it the pending request.
+	if ( !is_pending(command, buf) ) {
+		// Command is not pending, so go ahead and submit a new one
+		// if our command mode permits.
+		if ( m_mode == results_only ) {
+			return GAHPCLIENT_COMMAND_NOT_SUBMITTED;
+		}
+		now_pending(command, buf);
+	}
+
+		// If we made it here, command is pending.
+
+		// Check first if command completed.
+	Gahp_Args* result = get_pending_result(command,buf);
+	if ( result ) {
+		// command completed.
+		if (result->argc != 3) {
+			EXCEPT("Bad %s Result",command);
+		}
+		int rc = atoi( result->argv[1] );
+		if ( strcasecmp(result->argv[2], NULLSTRING) ) {
+			error_string = result->argv[2];
+		} else {
+			error_string = "";
 		}
 		delete result;
 		return rc;
@@ -3052,7 +3083,7 @@ GahpClient::blah_job_submit(ClassAd *job_ad, char **job_id)
 	std::string ad_string;
 
 		// Check if this command is supported
-	if  (server->m_commands_supported->contains_anycase(command)==FALSE) {
+	if (contains_anycase(server->m_commands_supported, command)==false) {
 		return GAHPCLIENT_COMMAND_NOT_SUPPORTED;
 	}
 
@@ -3118,7 +3149,7 @@ GahpClient::blah_job_status(const char *job_id, ClassAd **status_ad)
 	static const char* command = "BLAH_JOB_STATUS";
 
 		// Check if this command is supported
-	if  (server->m_commands_supported->contains_anycase(command)==FALSE) {
+	if (contains_anycase(server->m_commands_supported, command)==false) {
 		return GAHPCLIENT_COMMAND_NOT_SUPPORTED;
 	}
 
@@ -3187,7 +3218,7 @@ GahpClient::blah_job_cancel(const char *job_id)
 	static const char* command = "BLAH_JOB_CANCEL";
 
 		// Check if this command is supported
-	if  (server->m_commands_supported->contains_anycase(command)==FALSE) {
+	if (contains_anycase(server->m_commands_supported, command)==false) {
 		return GAHPCLIENT_COMMAND_NOT_SUPPORTED;
 	}
 
@@ -3245,7 +3276,7 @@ GahpClient::blah_job_refresh_proxy(const char *job_id, const char *proxy_file)
 	static const char* command = "BLAH_JOB_REFRESH_PROXY";
 
 		// Check if this command is supported
-	if  (server->m_commands_supported->contains_anycase(command)==FALSE) {
+	if (contains_anycase(server->m_commands_supported, command)==false) {
 		return GAHPCLIENT_COMMAND_NOT_SUPPORTED;
 	}
 
@@ -3310,7 +3341,7 @@ GahpClient::blah_download_sandbox(const char *sandbox_id, const ClassAd *job_ad,
 	std::string ad_string;
 
 		// Check if this command is supported
-	if ( server->m_commands_supported->contains_anycase( command ) == FALSE ) {
+	if (contains_anycase(server->m_commands_supported, command) == false) {
 		return GAHPCLIENT_COMMAND_NOT_SUPPORTED;
 	}
 
@@ -3382,7 +3413,7 @@ GahpClient::blah_upload_sandbox(const char *sandbox_id, const ClassAd *job_ad)
 	std::string ad_string;
 
 		// Check if this command is supported
-	if ( server->m_commands_supported->contains_anycase( command ) == FALSE ) {
+	if (contains_anycase(server->m_commands_supported, command) == false ) {
 		return GAHPCLIENT_COMMAND_NOT_SUPPORTED;
 	}
 
@@ -3449,7 +3480,7 @@ GahpClient::blah_download_proxy(const char *sandbox_id, const ClassAd *job_ad)
 	std::string ad_string;
 
 		// Check if this command is supported
-	if ( server->m_commands_supported->contains_anycase( command ) == FALSE ) {
+	if (contains_anycase(server->m_commands_supported, command) == false ) {
 		return GAHPCLIENT_COMMAND_NOT_SUPPORTED;
 	}
 
@@ -3516,7 +3547,7 @@ GahpClient::blah_destroy_sandbox(const char *sandbox_id, const ClassAd *job_ad)
 	std::string ad_string;
 
 		// Check if this command is supported
-	if ( server->m_commands_supported->contains_anycase( command ) == FALSE ) {
+	if (contains_anycase(server->m_commands_supported, command) == false) {
 		return GAHPCLIENT_COMMAND_NOT_SUPPORTED;
 	}
 
@@ -3582,7 +3613,7 @@ GahpClient::blah_get_sandbox_path( const char *sandbox_id,
 	static const char *command = "GET_SANDBOX_PATH";
 
 		// Check if this command is supported
-	if  ( server->m_commands_supported->contains_anycase( command ) == FALSE ) {
+	if  (contains_anycase(server->m_commands_supported, command) == false ) {
 		return false;
 	}
 
@@ -3622,7 +3653,7 @@ GahpClient::arc_ping(const std::string &service_url)
 	static const char* command = "ARC_PING";
 
 		// Check if this command is supported
-	if  (server->m_commands_supported->contains_anycase(command)==FALSE) {
+	if (contains_anycase(server->m_commands_supported, command)==false) {
 		return GAHPCLIENT_COMMAND_NOT_SUPPORTED;
 	}
 
@@ -3677,13 +3708,14 @@ GahpClient::arc_ping(const std::string &service_url)
 int
 GahpClient::arc_job_new(const std::string &service_url,
                         const std::string &rsl,
+                        bool has_proxy,
                         std::string &job_id,
                         std::string &job_status)
 {
 	static const char* command = "ARC_JOB_NEW";
 
 		// Check if this command is supported
-	if  (server->m_commands_supported->contains_anycase(command)==FALSE) {
+	if (contains_anycase(server->m_commands_supported, command)==false) {
 		return GAHPCLIENT_COMMAND_NOT_SUPPORTED;
 	}
 
@@ -3705,7 +3737,10 @@ GahpClient::arc_job_new(const std::string &service_url,
 		if ( m_mode == results_only ) {
 			return GAHPCLIENT_COMMAND_NOT_SUBMITTED;
 		}
-		now_pending(command,buf,deleg_proxy);
+		// The first command of a new job submission to ARC CE should
+		// be low priority. If the job has a proxy, then that was the
+		// ARC_DELEGATION_NEW. Otherwise, this is it.
+		now_pending(command,buf,deleg_proxy,has_proxy?medium_prio:low_prio);
 	}
 
 		// If we made it here, command is pending.
@@ -3759,7 +3794,7 @@ GahpClient::arc_job_status(const std::string &service_url,
 	static const char* command = "ARC_JOB_STATUS";
 
 		// Check if this command is supported
-	if  (server->m_commands_supported->contains_anycase(command)==FALSE) {
+	if (contains_anycase(server->m_commands_supported, command)==false) {
 		return GAHPCLIENT_COMMAND_NOT_SUPPORTED;
 	}
 
@@ -3824,13 +3859,13 @@ GahpClient::arc_job_status(const std::string &service_url,
 int
 GahpClient::arc_job_status_all(const std::string &service_url,
                                const std::string &states,
-                               StringList &job_ids,
-                               StringList &job_states)
+                               std::vector<std::string> &job_ids,
+                               std::vector<std::string> &job_states)
 {
 	static const char* command = "ARC_JOB_STATUS_ALL";
 
 		// Check if this command is supported
-	if  (server->m_commands_supported->contains_anycase(command)==FALSE) {
+	if (contains_anycase(server->m_commands_supported, command)==false) {
 		return GAHPCLIENT_COMMAND_NOT_SUPPORTED;
 	}
 
@@ -3852,7 +3887,7 @@ GahpClient::arc_job_status_all(const std::string &service_url,
 		if ( m_mode == results_only ) {
 			return GAHPCLIENT_COMMAND_NOT_SUBMITTED;
 		}
-		now_pending(command,buf,deleg_proxy);
+		now_pending(command,buf,deleg_proxy,high_prio);
 	}
 
 		// If we made it here, command is pending.
@@ -3877,8 +3912,8 @@ GahpClient::arc_job_status_all(const std::string &service_url,
 				EXCEPT("Bad %s Result",command);
 			}
 			for ( int i = 4;  (i + 1) < result->argc; i += 2 ) {
-				job_ids.append(result->argv[i]);
-				job_states.append(result->argv[i + 1]);
+				job_ids.emplace_back(result->argv[i]);
+				job_states.emplace_back(result->argv[i + 1]);
 			}
 		}
 		delete result;
@@ -3904,7 +3939,7 @@ GahpClient::arc_job_info(const std::string &service_url,
 	static const char* command = "ARC_JOB_INFO";
 
 		// Check if this command is supported
-	if  (server->m_commands_supported->contains_anycase(command)==FALSE) {
+	if (contains_anycase(server->m_commands_supported, command)==false) {
 		return GAHPCLIENT_COMMAND_NOT_SUPPORTED;
 	}
 
@@ -3969,12 +4004,12 @@ GahpClient::arc_job_info(const std::string &service_url,
 int
 GahpClient::arc_job_stage_in(const std::string &service_url,
                              const std::string &job_id,
-                             StringList &files)
+                             const std::vector<std::string> &files)
 {
 	static const char* command = "ARC_JOB_STAGE_IN";
 
 		// Check if this command is supported
-	if  (server->m_commands_supported->contains_anycase(command)==FALSE) {
+	if (contains_anycase(server->m_commands_supported, command)==false) {
 		return GAHPCLIENT_COMMAND_NOT_SUPPORTED;
 	}
 
@@ -3982,18 +4017,13 @@ GahpClient::arc_job_stage_in(const std::string &service_url,
 	std::string reqline;
 	char *esc1 = strdup( escapeGahpString(service_url) );
 	char *esc2 = strdup( escapeGahpString(job_id) );
-	int x = formatstr(reqline,"%s %s %d", esc1, esc2, files.number() );
+	int x = formatstr(reqline,"%s %s %zu", esc1, esc2, files.size() );
 	free( esc1 );
 	free( esc2 );
 	ASSERT( x > 0 );
-	int cnt = 0;
-	const char *filename;
-	files.rewind();
-	while ( (filename = files.next()) ) {
-		formatstr_cat(reqline, " %s", filename);
-		cnt++;
+	for (auto& filename: files) {
+		formatstr_cat(reqline, " %s", filename.c_str());
 	}
-	ASSERT( cnt == files.number() );
 	const char *buf = reqline.c_str();
 
 		// Check if this request is currently pending.  If not, make
@@ -4041,13 +4071,13 @@ GahpClient::arc_job_stage_in(const std::string &service_url,
 int
 GahpClient::arc_job_stage_out(const std::string &service_url,
                               const std::string &job_id,
-                              StringList &src_files,
-                              StringList &dest_files)
+                              const std::vector<std::string> &src_files,
+                              const std::vector<std::string> &dest_files)
 {
 	static const char* command = "ARC_JOB_STAGE_OUT";
 
 		// Check if this command is supported
-	if  (server->m_commands_supported->contains_anycase(command)==FALSE) {
+	if (contains_anycase(server->m_commands_supported, command)==false) {
 		return GAHPCLIENT_COMMAND_NOT_SUPPORTED;
 	}
 
@@ -4055,26 +4085,18 @@ GahpClient::arc_job_stage_out(const std::string &service_url,
 	std::string reqline;
 	char *esc1 = strdup( escapeGahpString(service_url) );
 	char *esc2 = strdup( escapeGahpString(job_id) );
-	int x = formatstr(reqline,"%s %s %d", esc1, esc2, src_files.number() );
+	int x = formatstr(reqline,"%s %s %zu", esc1, esc2, src_files.size() );
 	free( esc1 );
 	free( esc2 );
 	ASSERT( x > 0 );
-	int cnt = 0;
-	const char *src_filename;
-	const char *dest_filename;
-	src_files.rewind();
-	dest_files.rewind();
-	while ( (src_filename = src_files.next()) &&
-			(dest_filename = dest_files.next()) ) {
-		esc1 = strdup( escapeGahpString(src_filename) );
-		esc2 = strdup( escapeGahpString(dest_filename) );
+	ASSERT(src_files.size() == dest_files.size());
+	for (size_t i = 0; i < src_files.size(); i++) {
+		esc1 = strdup( escapeGahpString(src_files[i]) );
+		esc2 = strdup( escapeGahpString(dest_files[i]) );
 		formatstr_cat(reqline," %s %s", esc1, esc2);
-		cnt++;
 		free( esc1 );
 		free( esc2 );
 	}
-	ASSERT( cnt == src_files.number() );
-	ASSERT( cnt == dest_files.number() );
 	const char *buf = reqline.c_str();
 
 		// Check if this request is currently pending.  If not, make
@@ -4126,7 +4148,7 @@ GahpClient::arc_job_kill(const std::string &service_url,
 	static const char* command = "ARC_JOB_KILL";
 
 		// Check if this command is supported
-	if  (server->m_commands_supported->contains_anycase(command)==FALSE) {
+	if (contains_anycase(server->m_commands_supported, command)==false) {
 		return GAHPCLIENT_COMMAND_NOT_SUPPORTED;
 	}
 
@@ -4189,7 +4211,7 @@ GahpClient::arc_job_clean(const std::string &service_url,
 	static const char* command = "ARC_JOB_CLEAN";
 
 		// Check if this command is supported
-	if  (server->m_commands_supported->contains_anycase(command)==FALSE) {
+	if (contains_anycase(server->m_commands_supported, command)==false) {
 		return GAHPCLIENT_COMMAND_NOT_SUPPORTED;
 	}
 
@@ -4253,7 +4275,7 @@ GahpClient::arc_delegation_new(const std::string &service_url,
 	static const char* command = "ARC_DELEGATION_NEW";
 
 		// Check if this command is supported
-	if  (server->m_commands_supported->contains_anycase(command)==FALSE) {
+	if (contains_anycase(server->m_commands_supported, command)==false) {
 		return GAHPCLIENT_COMMAND_NOT_SUPPORTED;
 	}
 
@@ -4275,7 +4297,7 @@ GahpClient::arc_delegation_new(const std::string &service_url,
 		if ( m_mode == results_only ) {
 			return GAHPCLIENT_COMMAND_NOT_SUBMITTED;
 		}
-		now_pending(command,buf,deleg_proxy);
+		now_pending(command,buf,deleg_proxy,low_prio);
 	}
 
 		// If we made it here, command is pending.
@@ -4323,7 +4345,7 @@ GahpClient::arc_delegation_renew(const std::string &service_url,
 	static const char* command = "ARC_DELEGATION_RENEW";
 
 		// Check if this command is supported
-	if  (server->m_commands_supported->contains_anycase(command)==FALSE) {
+	if (contains_anycase(server->m_commands_supported, command)==false) {
 		return GAHPCLIENT_COMMAND_NOT_SUPPORTED;
 	}
 
@@ -4609,10 +4631,10 @@ int GahpClient::gce_instance_list( const std::string &service_url,
 								   const std::string &account,
 								   const std::string &project,
 								   const std::string &zone,
-								   StringList &instance_ids,
-								   StringList &instance_names,
-								   StringList &statuses,
-								   StringList &status_msgs )
+								   std::vector<std::string> &instance_ids,
+								   std::vector<std::string> &instance_names,
+								   std::vector<std::string> &statuses,
+								   std::vector<std::string> &status_msgs )
 {
 	static const char* command = "GCE_INSTANCE_LIST";
 
@@ -4661,10 +4683,10 @@ int GahpClient::gce_instance_list( const std::string &service_url,
 				EXCEPT( "Bad %s result", command );
 			}
 			for ( int i = 0; i < cnt; i++ ) {
-				instance_ids.append( result->argv[3 + 4*i] );
-				instance_names.append( result->argv[3 + 4*i + 1] );
-				statuses.append( result->argv[3 + 4*i + 2] );
-				status_msgs.append( result->argv[3 + 4*i + 3] );
+				instance_ids.emplace_back( result->argv[3 + 4*i] );
+				instance_names.emplace_back( result->argv[3 + 4*i + 1] );
+				statuses.emplace_back( result->argv[3 + 4*i + 2] );
+				status_msgs.emplace_back( result->argv[3 + 4*i + 3] );
 			}
 		}
 
@@ -4738,7 +4760,8 @@ int GahpClient::azure_ping( const std::string &auth_file,
 
 int GahpClient::azure_vm_create( const std::string &auth_file,
                                  const std::string &subscription,
-                                 StringList &vm_params, std::string &vm_id,
+                                 const std::vector<std::string> &vm_params,
+                                 std::string &vm_id,
                                  std::string &ip_address )
 {
 	static const char* command = "AZURE_VM_CREATE";
@@ -4749,11 +4772,9 @@ int GahpClient::azure_vm_create( const std::string &auth_file,
 	reqline += " ";
 	reqline += escapeGahpString( subscription );
 
-	const char *next_param;
-	vm_params.rewind();
-	while ( (next_param = vm_params.next()) ) {
+	for (const auto& next_param : vm_params) {
 		reqline += " ";
-		reqline += escapeGahpString( next_param );
+		reqline += escapeGahpString( next_param.c_str() );
 	}
 
 	const char *buf = reqline.c_str();
@@ -4862,8 +4883,8 @@ int GahpClient::azure_vm_delete( const std::string &auth_file,
 
 int GahpClient::azure_vm_list( const std::string &auth_file,
                                const std::string &subscription,
-		                       StringList &vm_names,
-		                       StringList &vm_statuses )
+		                       std::vector<std::string> &vm_names,
+		                       std::vector<std::string> &vm_statuses )
 {
 	static const char* command = "AZURE_VM_LIST";
 
@@ -4906,8 +4927,8 @@ int GahpClient::azure_vm_list( const std::string &auth_file,
 				EXCEPT( "Bad %s result", command );
 			}
 			for ( int i = 0; i < cnt; i++ ) {
-				vm_names.append( result->argv[3 + 2*i] );
-				vm_statuses.append( result->argv[3 + 2*i + 1] );
+				vm_names.emplace_back( result->argv[3 + 2*i] );
+				vm_statuses.emplace_back( result->argv[3 + 2*i + 1] );
 			}
 		}
 

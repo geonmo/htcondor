@@ -26,11 +26,10 @@
 #include "sig_install.h"
 #include "daemon.h"
 #include "dc_collector.h"
-#include "extArray.h"
 #include "string_list.h"
 #include "match_prefix.h"    // is_arg_colon_prefix
 #include "condor_api.h"
-#include "condor_string.h"   // for strnewp()
+#include "condor_string.h"
 #include "status_types.h"
 #include "directory.h"
 #include "format_time.h"
@@ -112,7 +111,7 @@ static struct AppType {
 	int    test_backward;   // test backward reading code.
 	vector<pid_t> query_pids;
 	vector<const char *> query_log_dirs;
-	vector<const char *> query_addrs;
+	vector<char *> query_addrs;
 	vector<const char *> constraint;
 
 	// hold temporary results.
@@ -157,6 +156,9 @@ static struct AppType {
 		target_names.Clear();
 		all_log_info.Clear();
 		print_head.Clear();
+		for (char *p : query_addrs) {
+			free(p);
+		}
 	}	
 } App;
 
@@ -349,10 +351,10 @@ render_slot_id (std::string & out, ClassAd * ad, Formatter & /*fmt*/)
 			if (pat)
 				pat[0] = 0;
 		} else {
-			sprintf(outstr, "%u_?", slotid);
+			snprintf(outstr, sizeof(outstr), "%u_?", slotid);
 		}
 	} else {
-		sprintf(outstr, "%u", slotid);
+		snprintf(outstr, sizeof(outstr), "%u", slotid);
 	}
 	out = outstr;
 	return true;
@@ -365,7 +367,7 @@ format_jobid_pid (const char *jobid, Formatter & /*fmt*/)
 	static char outstr[16];
 	outstr[0] = 0;
 	if (App.job_to_pid.find(jobid) != App.job_to_pid.end()) {
-		sprintf(outstr, "%u", App.job_to_pid[jobid]);
+		snprintf(outstr, sizeof(outstr), "%u", App.job_to_pid[jobid]);
 	}
 	return outstr;
 }
@@ -1109,7 +1111,7 @@ void parse_args(int /*argc*/, char *argv[])
 					exit(1);
 				}
 				++ixArg;
-				App.query_addrs.push_back(argv[ixArg]);
+				App.query_addrs.push_back(strdup(argv[ixArg]));
 			} else if (IsArg(parg, "logdir", 3)) {
 				if ( ! argv[ixArg+1] || *argv[ixArg+1] == '-') {
 					fprintf(stderr, "Error: Argument %s requires a directory\n", argv[ixArg]);
@@ -1691,7 +1693,7 @@ main( int argc, char *argv[] )
 
 	// if we have accumulated no query addresses, then query the default
 	if (App.query_addrs.empty()) {
-		App.query_addrs.push_back("NULL");
+		App.query_addrs.push_back(strdup("NULL"));
 	}
 
 	bool identify_schedd = App.query_addrs.size() > 1;

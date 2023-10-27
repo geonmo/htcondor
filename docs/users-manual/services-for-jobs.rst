@@ -24,23 +24,21 @@ to run, or machine to machine, and create non reproducible, difficult
 to debug problems.  Rather, HTCondor is deliberate about what environment 
 variables a job sees, and allows the user to set them in the job description file.
 
-The user may define environment variables for the job with the **environment**
-command in the submit file. See within the :doc:`/man-pages/condor_submit` 
-manual page for more details about this command.
+The user may define environment variables for the job with the :subcom:`environment`
+submit command.
 
 Instead of defining environment variables individually, the entire set
 of environment variables in the condor_submit's environment 
-can be copied into the job.  The **getenv** :index:`getenv<single: getenv; submit commands>` 
-command does this, as described on the :doc:`/man-pages/condor_submit` manual page.
+can be copied into the job.  The :subcom:`getenv` command does this.
 
 In general, it is preferable to just declare the minimum set of needed
 environment variables with the **environment** command, as that clearly
 declares the needed environment variables.  If the needed set is not known,
-the **getenv** command is useful.  If the environment is set with both the
-**environment** :index:`environment<single: environment; submit commands>` command
-and **getenv** is also set to true, values specified with
-**environment** override values in the submitter's environment,
-regardless of the order of the **environment** and **getenv** commands in the submit file.
+the :subcom:`getenv` command is useful.  If the environment is set with both the
+:subcom:`environment<example with getenv>` command
+and :subcom:`getenv` is also set to true, values specified with
+:subcom:`environment` override values in the submitter's environment,
+regardless of the order of the :subcom:`environment` and :subcom:`getenv` commands in the submit file.
 
 Commands within the submit description file may reference the
 environment variables of the submitter. Submit
@@ -63,7 +61,7 @@ executing job that may be useful.
    gives the name of the slot (for multicore machines), on which the job is
    run. On machines with only a single slot, the value of this variable
    will be 1, just like the ``SlotID`` attribute in the machine's
-   ClassAd. See the :doc:`/admin-manual/policy-configuration` section for more 
+   ClassAd. See the :doc:`/admin-manual/ep-policy-configuration` section for more 
    details about configuring multicore machines.
 -  ``_CONDOR_JOB_AD``
    :index:`_CONDOR_JOB_AD environment variable`\ :index:`_CONDOR_JOB_AD<single: _CONDOR_JOB_AD; environment variables>`
@@ -108,7 +106,7 @@ executing job that may be useful.
 -  ``X509_USER_PROXY``
    gives the full path to the X.509 user proxy file if one is associated
    with the job. Typically, a user will specify
-   **x509userproxy** :index:`x509userproxy<single: x509userproxy; submit commands>` in
+   :subcom:`x509userproxy<environment variable>` in
    the submit description file.
 
 
@@ -116,11 +114,11 @@ Communicating with the Submit machine via Chirp
 -----------------------------------------------
 
 HTCondor provides a method for running jobs to read or write information
-to or from the submit machine, called "chirp".  Chirp allows jobs to
+to or from the access point, called "chirp".  Chirp allows jobs to
 
 - Write to the job ad in the schedd.
   This can be used for long-running jobs to write progress information
-  back to the submit machine, so that a *condor_q* query will reveal
+  back to the access point, so that a *condor_q* query will reveal
   how far along a running job is.  Or, if a job is listening on a network
   port, chirp can write the port number to the job ad, so that others
   can connect to this job.
@@ -135,14 +133,14 @@ to or from the submit machine, called "chirp".  Chirp allows jobs to
   allows anyone with access to that file to see how much progress a running
   job has made.
 
-- Read a file from the submit machine.
-  This allows a job to read a file from the submit machine at runtime.  
+- Read a file from the access point.
+  This allows a job to read a file from the access point at runtime.  
   While file transfer is generally a better approach, file transfer requires
   the submitter to know the files to be transferred at submit time.
 
-- Write a file to the submit machine.
+- Write a file to the access point.
   Again, while file transfer is usually the better choice, with chirp, a job
-  can write intermediate results back to the submit machine before the job exits.
+  can write intermediate results back to the access point before the job exits.
 
 HTCondor ships a command-line tool, called *condor_chirp* that can do these
 actions, and provides python bindings so that they can be done natively in 
@@ -153,7 +151,7 @@ When changes to a job made by chirp take effect
 
 When *condor_chirp* successfully updates a job ad attribute, that change
 will be reflected in the copy of the job ad in the *condor_schedd* on 
-the submit machine.  However, most job ad attributes are read by the *condor_starter*
+the access point.  However, most job ad attributes are read by the *condor_starter*
 or *condor_startd* at job start up time, and should chirp change these
 attributes at run time, it will not impact the running job.  In particular,
 the attributes relating to resource requests, such as RequestCpus, RequestMemory,

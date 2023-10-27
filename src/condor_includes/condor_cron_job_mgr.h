@@ -90,23 +90,9 @@ class CronJobMgr : public Service
 	int					 m_schedule_timer;	// DaemonCore timerID
 
 	// Private member functions
-	void ScheduleJobsFromTimer();
+	void ScheduleJobsFromTimer( int timerID = -1 );
 	int DoConfig( bool initial = false );
 	int ParseJobList( const char *JobListString );
-	char *NextTok( char *cur, const char *tok );
-	char *GetParamName( const char	*paramName1,
-						const char	*paramName2 = NULL );
-	char *GetParam( const char	*paramName1,
-					const char	*paramName2 = NULL );
-	bool GetParam( const char	*paramName1,
-				   const char	*paramName2,
-				   MyString	&value );
-	bool GetParam( const char	*paramName1,
-				   const char	*paramName2,
-				   double		&value,
-				   double		 default_value,
-				   double		 min_value = -DBL_MAX,
-				   double		 max_value =  DBL_MAX );
 
 };
 

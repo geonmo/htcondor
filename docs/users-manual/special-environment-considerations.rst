@@ -41,7 +41,7 @@ the job's initial current working directory, and this mount point could
 become automatically unmounted by the automounter.
 
 There is a simple work around. When submitting the job, use the submit
-command **initialdir** :index:`initialdir<single: initialdir; submit commands>` to
+command :subcom:`initialdir<and NFS>` to
 point to the stable access point. For example, suppose the NFS
 automounter is configured to mount a volume at mount point
 ``/a/myserver.company.com/vol1/johndoe`` whenever the directory
@@ -52,13 +52,13 @@ description file solves the problem.
 
       initialdir = /home/johndoe
 
-:index:`cache flush on submit machine<single: cache flush on submit machine; NFS>`
+:index:`cache flush on access point<single: cache flush on access point; NFS>`
 :index:`IwdFlushNFSCache<single: IwdFlushNFSCache; ClassAd job attribute>`
 
-HTCondor attempts to flush the NFS cache on a submit machine in order to
+HTCondor attempts to flush the NFS cache on a access point in order to
 refresh a job's initial working directory. This allows files written by
 the job into an NFS mounted initial working directory to be immediately
-visible on the submit machine. Since the flush operation can require
+visible on the access point. Since the flush operation can require
 multiple round trips to the NFS server, it is expensive. Therefore, a
 job may disable the flushing by setting
 
@@ -133,7 +133,7 @@ If the submitting machine is alive, it periodically renews the job
 lease, and all is well. If the submitting machine is dead, or the
 network goes down, the job lease will no longer be renewed. Eventually
 the lease expires. While the lease has not expired, the execute host
-continues to try to run the job, in the hope that the submit machine
+continues to try to run the job, in the hope that the access point
 will come back to life and reconnect. If the job completes and the lease
 has not expired, yet the submitting machine is still dead, the
 *condor_starter* daemon will wait for a *condor_shadow* daemon to
@@ -146,16 +146,16 @@ the *condor_starter* daemon and user job.
 A default value equal to 40 minutes exists for a job's ClassAd attribute
 ``JobLeaseDuration``, or this attribute may be set in the submit
 description file, using
-**job_lease_duration** :index:`job_lease_duration<single: job_lease_duration; submit commands>`,
+:subcom:`job_lease_duration<definition>`,
 to keep a job running in the case that the submit side no longer renews
 the lease. There is a trade off in setting the value of
-**job_lease_duration** :index:`job_lease_duration<single: job_lease_duration; submit commands>`.
+:subcom:`job_lease_duration`
 Too small a value, and the job might get killed before the submitting
 machine has a chance to recover. Forward progress on the job will be
 lost. Too large a value, and an execute resource will be tied up waiting
 for the job lease to expire. The value should be chosen based on how
 long the user is willing to tie up the execute machines, how quickly
-submit machines come back up, and how much work would be lost if the
+access points come back up, and how much work would be lost if the
 lease expires, the job is killed, and the job must start over from its
 beginning.
 
@@ -186,7 +186,7 @@ submit description file allow this choice of platforms.
 
 A simplified example is a cross submission. An executable is available
 for one platform, but the submission is done from a different platform.
-Given the correct executable, the ``requirements`` command in the submit
+Given the correct executable, the :subcom:`requirements` command in the submit
 description file specifies the target architecture. For example, an
 executable compiled for a 32-bit Intel processor running Windows Vista,
 submitted from an Intel architecture running Linux would add the
@@ -196,7 +196,7 @@ submitted from an Intel architecture running Linux would add the
 
       requirements = Arch == "INTEL" && OpSys == "WINDOWS"
 
-Without this ``requirement``, *condor_submit* will assume that the
+Without this :subcom:`requirement`, *condor_submit* will assume that the
 program is to be executed on a machine with the same platform as the
 machine where the job is submitted.
 
@@ -255,6 +255,10 @@ submit description file that queues three jobs for this example:
       output       = povray.out.$(Process)
       error        = povray.err.$(Process)
 
+      request_cpus            = 1
+      request_memory          = 512M
+      request_disk            = 1G
+
       requirements = (Arch == "INTEL" && OpSys == "LINUX") || \
                      (Arch == "X86_64" && OpSys =="LINUX")
 
@@ -302,6 +306,10 @@ specific operating systems and versions in heterogeneous pools.
 
       Requirements = (OpSysName == "RedHat")
 
+      request_cpus            = 1
+      request_memory          = 512M
+      request_disk            = 1G
+
       Queue
 
 .. code-block:: condor-submit
@@ -316,6 +324,10 @@ specific operating systems and versions in heterogeneous pools.
 
       requirements = ( OpSysName == "RedHat" && OpSysMajorVer == 6 )
 
+      request_cpus            = 1
+      request_memory          = 512M
+      request_disk            = 1G
+
       queue
 
 Here is a more compact way to specify a RedHat 6 platform.
@@ -329,6 +341,10 @@ Here is a more compact way to specify a RedHat 6 platform.
       log          = distro.log
       output       = distro.out
       error        = distro.err
+
+      request_cpus            = 1
+      request_memory          = 512M
+      request_disk            = 1G
 
       requirements = (OpSysAndVer == "RedHat6")
 

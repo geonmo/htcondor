@@ -87,7 +87,7 @@ check_account_setup( const std::string & publicKeyFile, const std::string & priv
 		commandState, commandID, scratchpad );
 
 	int setupTimer = daemonCore->Register_Timer( 0, TIMER_NEVER,
-		 (void (Service::*)()) & FunctorSequence::operator(),
+		 (void (Service::*)(int)) & FunctorSequence::timer,
 		 "CheckForStacks", fs );
 	cfGahp->setNotificationTimerId( setupTimer );
 	ec2Gahp->setNotificationTimerId( setupTimer );
@@ -165,7 +165,7 @@ check_setup( const char * cloudFormationURL, const char * serviceURL ) {
 			ReliSock * sock = (ReliSock *) daemon->makeConnectedSocket(
 				Stream::reli_sock, 0, 0, & errorStack );
 			if( sock == NULL ) {
-				fprintf( stderr, "Failed to connect to to collector at '%s'.  Make sure COLLECTOR_HOST is set correctly.  If it is, ask your administrator about firewalls.", daemon->addr() );
+				fprintf( stderr, "Failed to connect to collector at '%s'.  Make sure COLLECTOR_HOST is set correctly.  If it is, ask your administrator about firewalls.", daemon->addr() );
 				fprintf( stderr, "  Because firewalls are machine-specific, we will continue to check your set-up.  However, if your instances fail to report to your pool, you may want to address this problem and try again.\n" );
 				fprintf( stderr, "\n" );
 			} else {
@@ -302,7 +302,7 @@ setup( const char * region, const char * pukf, const char * prkf, const char * c
 	EC2GahpClient * ec2Gahp = startOneGahpClient( publicKeyFile, ec2URL );
 
 	// FIXME: Do something cleverer for versioning.
-	std::string bucketStackURL = "https://s3.amazonaws.com/condor-annex/bucket-10.json";
+	std::string bucketStackURL = "https://s3.amazonaws.com/condor-annex/bucket-11.json";
 	std::string bucketStackName = "HTCondorAnnex-ConfigurationBucket";
 	std::string bucketStackDescription = "configuration bucket (this takes less than a minute)";
 	std::map< std::string, std::string > bucketParameters;
@@ -316,7 +316,7 @@ setup( const char * region, const char * pukf, const char * prkf, const char * c
 		commandState, commandID );
 
 	// FIXME: Do something cleverer for versioning.
-	std::string lfStackURL = "https://s3.amazonaws.com/condor-annex/template-10.json";
+	std::string lfStackURL = "https://s3.amazonaws.com/condor-annex/template-11.json";
 	std::string lfStackName = "HTCondorAnnex-LambdaFunctions";
 	std::string lfStackDescription = "Lambda functions (this takes about a minute)";
 	std::map< std::string, std::string > lfParameters;
@@ -331,7 +331,7 @@ setup( const char * region, const char * pukf, const char * prkf, const char * c
 		commandState, commandID );
 
 	// FIXME: Do something cleverer for versioning.
-	std::string rStackURL = "https://s3.amazonaws.com/condor-annex/role-10.json";
+	std::string rStackURL = "https://s3.amazonaws.com/condor-annex/role-11.json";
 	std::string rStackName = "HTCondorAnnex-InstanceProfile";
 	std::string rStackDescription = "instance profile (this takes about two minutes)";
 	std::map< std::string, std::string > rParameters;
@@ -346,7 +346,7 @@ setup( const char * region, const char * pukf, const char * prkf, const char * c
 		commandState, commandID );
 
 	// FIXME: Do something cleverer for versioning.
-	std::string sgStackURL = "https://s3.amazonaws.com/condor-annex/security-group-10.json";
+	std::string sgStackURL = "https://s3.amazonaws.com/condor-annex/security-group-11.json";
 	std::string sgStackName = "HTCondorAnnex-SecurityGroup";
 	std::string sgStackDescription = "security group (this takes less than a minute)";
 	std::map< std::string, std::string > sgParameters;
@@ -374,7 +374,7 @@ setup( const char * region, const char * pukf, const char * prkf, const char * c
 
 
 	int setupTimer = daemonCore->Register_Timer( 0, TIMER_NEVER,
-		 (void (Service::*)()) & FunctorSequence::operator(),
+		 (void (Service::*)(int)) & FunctorSequence::timer,
 		 "CreateStack, DescribeStacks, WriteConfigFile", fs );
 	cfGahp->setNotificationTimerId( setupTimer );
 	ec2Gahp->setNotificationTimerId( setupTimer );

@@ -21,11 +21,11 @@
 #include "condor_common.h"
 #include "check_events.h"
 #include "read_multiple_logs.h"
+#include "stl_string_utils.h"
 
 //-----------------------------------------------------------------------------
 
 CheckEvents::CheckEvents(int allowEventsSetting) :
-		jobHash(ReadMultipleUserLogs::hashFuncJobID),
 		noSubmitId(-1, 0, 0)
 {
 	allowEvents = allowEventsSetting;
@@ -35,12 +35,6 @@ CheckEvents::CheckEvents(int allowEventsSetting) :
 
 CheckEvents::~CheckEvents()
 {
-	JobInfo *info = NULL;
-	jobHash.startIterations();
-	while ( jobHash.iterate(info) != 0 ) {
-		delete info;
-	}
-	jobHash.clear();
 }
 
 //-----------------------------------------------------------------------------
@@ -48,39 +42,23 @@ CheckEvents::~CheckEvents()
 CheckEvents::check_event_result_t
 CheckEvents::CheckAnEvent(const ULogEvent *event, std::string &errorMsg)
 {
-	MyString ms;
-	auto rv = CheckAnEvent(event, ms);
-	errorMsg = ms;  // unconditional assignment in CheckAnEvent().
-	return rv;
-}
-
-CheckEvents::check_event_result_t
-CheckEvents::CheckAnEvent(const ULogEvent *event, MyString &errorMsg)
-{
 	check_event_result_t	result = EVENT_OKAY;
 	errorMsg = "";
 
 	CondorID	id(event->cluster, event->proc, event->subproc);
 
-	MyString	idStr("BAD EVENT: job ");
-	idStr.formatstr_cat("(%d.%d.%d)", id._cluster, id._proc, id._subproc);
+	std::string idStr("BAD EVENT: job ");
+	formatstr_cat(idStr, "(%d.%d.%d)", id._cluster, id._proc, id._subproc);
 
-	JobInfo *info = NULL;
-	if ( jobHash.lookup(id, info) == 0 ) {
-			// We already have an entry for this ID.
-	} else {
-			// Insert an entry for this ID.
-		info = new JobInfo();
-		if ( jobHash.insert(id, info) != 0 ) {
-			errorMsg = "EVENT ERROR: hash table insert error";
-			result = EVENT_ERROR;
-		}
-	}
+	// If the map already has an entry for id, then it will return an
+	// iterator to the existing entry.
+	auto [it, success] = jobHash.insert({id, JobInfo()});
+	JobInfo& info = it->second;
 
 	if ( result != EVENT_ERROR ) {
 		switch ( event->eventNumber ) {
 		case ULOG_SUBMIT:
-			info->submitCount++;
+			info.submitCount++;
 			CheckJobSubmit(idStr, info, errorMsg, result);
 			break;
 
@@ -91,24 +69,24 @@ CheckEvents::CheckAnEvent(const ULogEvent *event, MyString &errorMsg)
 		case ULOG_EXECUTABLE_ERROR:
 				// Note: when we get an executable error, we seem to
 				// also always get an abort.
-			info->errorCount++;
+			info.errorCount++;
 				// We could probably do some extra checking here, as with
 				// an execute event, but I'm not going to worry about it
 				// for now.  wenger 2005-04-08.
 			break;
 
 		case ULOG_JOB_ABORTED:
-			info->abortCount++;
+			info.abortCount++;
 			CheckJobEnd(idStr, info, errorMsg, result);
 			break;
 
 		case ULOG_JOB_TERMINATED:
-			info->termCount++;
+			info.termCount++;
 			CheckJobEnd(idStr, info, errorMsg, result);
 			break;
 
 		case ULOG_POST_SCRIPT_TERMINATED:
-			info->postScriptCount++;
+			info.postScriptCount++;
 			CheckPostTerm(idStr, id, info, errorMsg, result);
 			break;
 
@@ -122,61 +100,61 @@ CheckEvents::CheckAnEvent(const ULogEvent *event, MyString &errorMsg)
 
 //-----------------------------------------------------------------------------
 void
-CheckEvents::CheckJobSubmit(const MyString &idStr, const JobInfo *info,
-		MyString &errorMsg, check_event_result_t &result)
+CheckEvents::CheckJobSubmit(const std::string &idStr, const JobInfo &info,
+		std::string &errorMsg, check_event_result_t &result)
 {
-	if ( info->submitCount != 1 ) {
+	if ( info.submitCount != 1 ) {
 		formatstr( errorMsg, "%s submitted, submit count != 1 (%d)",
-		           idStr.c_str(), info->submitCount );
+		           idStr.c_str(), info.submitCount );
 		result = AllowDuplicates() ? EVENT_BAD_EVENT : EVENT_ERROR;
 	}
 
-	if ( info->TotalEndCount() != 0 ) {
+	if ( info.TotalEndCount() != 0 ) {
 		formatstr( errorMsg, "%s submitted, total end count != 0 (%d)",
-		           idStr.c_str(), info->TotalEndCount() );
+		           idStr.c_str(), info.TotalEndCount() );
 		result = AllowExecSubmit() ? EVENT_BAD_EVENT : EVENT_ERROR;
 	}
 }
 
 //-----------------------------------------------------------------------------
 void
-CheckEvents::CheckJobExecute(const MyString &idStr, const JobInfo *info,
-		MyString &errorMsg, check_event_result_t &result)
+CheckEvents::CheckJobExecute(const std::string &idStr, const JobInfo &info,
+		std::string &errorMsg, check_event_result_t &result)
 {
-	if ( info->submitCount < 1 ) {
+	if ( info.submitCount < 1 ) {
 		formatstr( errorMsg, "%s executing, submit count < 1 (%d)",
-		           idStr.c_str(), info->submitCount );
+		           idStr.c_str(), info.submitCount );
 		result = (AllowExecSubmit() || AllowGarbage()) ?
 				EVENT_WARNING : EVENT_ERROR;
 	}
 
-	if ( info->TotalEndCount() != 0 ) {
+	if ( info.TotalEndCount() != 0 ) {
 		formatstr( errorMsg, "%s executing, total end count != 0 (%d)",
-		           idStr.c_str(), info->TotalEndCount() );
+		           idStr.c_str(), info.TotalEndCount() );
 		result = AllowExtraRuns() ? EVENT_BAD_EVENT : EVENT_ERROR;
 	}
 }
 
 //-----------------------------------------------------------------------------
 void
-CheckEvents::CheckJobEnd(const MyString &idStr, const JobInfo *info,
-		MyString &errorMsg, check_event_result_t &result)
+CheckEvents::CheckJobEnd(const std::string &idStr, const JobInfo &info,
+		std::string &errorMsg, check_event_result_t &result)
 {
-	if ( info->submitCount < 1 ) {
+	if ( info.submitCount < 1 ) {
 		formatstr( errorMsg, "%s ended, submit count < 1 (%d)",
-		           idStr.c_str(), info->submitCount );
+		           idStr.c_str(), info.submitCount );
 		result = (AllowExecSubmit() ||
-				(AllowGarbage() && (info->submitCount <= 1))) ?
+				(AllowGarbage() && (info.submitCount <= 1))) ?
 				EVENT_WARNING : EVENT_ERROR;
 	}
 
-	if ( info->TotalEndCount() != 1 ) {
+	if ( info.TotalEndCount() != 1 ) {
 		formatstr( errorMsg, "%s ended, total end count != 1 (%d)",
-		           idStr.c_str(), info->TotalEndCount() );
+		           idStr.c_str(), info.TotalEndCount() );
 		if ( AllowExtraAborts() &&
-				(info->abortCount == 1) && (info->termCount == 1) ) {
+				(info.abortCount == 1) && (info.termCount == 1) ) {
 			result = EVENT_BAD_EVENT;
-		} else if ( AllowDoubleTerm() && (info->termCount == 2) ) {
+		} else if ( AllowDoubleTerm() && (info.termCount == 2) ) {
 			result = EVENT_BAD_EVENT;
 		} else if ( AllowExtraRuns() ) {
 			result = EVENT_BAD_EVENT;
@@ -189,43 +167,43 @@ CheckEvents::CheckJobEnd(const MyString &idStr, const JobInfo *info,
 		}
 	}
 
-	if ( info->postScriptCount != 0 ) {
+	if ( info.postScriptCount != 0 ) {
 		formatstr( errorMsg, "%s ended, post script count != 0 (%d)",
-		           idStr.c_str(), info->postScriptCount );
+		           idStr.c_str(), info.postScriptCount );
 		result = AllowDuplicates() ? EVENT_BAD_EVENT : EVENT_ERROR;
 	}
 }
 
 //-----------------------------------------------------------------------------
 void
-CheckEvents::CheckPostTerm(const MyString &idStr,
-		const CondorID &id, const JobInfo *info,
-		MyString &errorMsg, check_event_result_t &result)
+CheckEvents::CheckPostTerm(const std::string &idStr,
+		const CondorID &id, const JobInfo &info,
+		std::string &errorMsg, check_event_result_t &result)
 {
 		// Allow for the case where we ran a post script after all submit
 		// attempts fail.
-	if ( noSubmitId == id && info->submitCount == 0 && info->termCount == 0 &&
-			info->postScriptCount >= 1 ) {
+	if ( noSubmitId == id && info.submitCount == 0 && info.termCount == 0 &&
+			info.postScriptCount >= 1 ) {
 		return;
 	}
 
-	if ( info->submitCount < 1 ) {
+	if ( info.submitCount < 1 ) {
 		formatstr( errorMsg, "%s post script ended, submit count < 1 (%d)",
-		           idStr.c_str(), info->submitCount );
+		           idStr.c_str(), info.submitCount );
 		result = (AllowDuplicates() ||
-				(AllowGarbage() && (info->submitCount <= 1))) ?
+				(AllowGarbage() && (info.submitCount <= 1))) ?
 				EVENT_BAD_EVENT : EVENT_ERROR;
 	}
 
-	if ( info->TotalEndCount() < 1 ) {
+	if ( info.TotalEndCount() < 1 ) {
 		formatstr( errorMsg, "%s post script ended, total end count < 1 (%d)",
-				   idStr.c_str(), info->TotalEndCount() );
+				   idStr.c_str(), info.TotalEndCount() );
 		result = AllowAlmostAll() ? EVENT_BAD_EVENT : EVENT_ERROR;
 	}
 
-	if ( info->postScriptCount > 1 ) {
+	if ( info.postScriptCount > 1 ) {
 		formatstr( errorMsg, "%s post script ended, post script count > 1 (%d)",
-		           idStr.c_str(), info->postScriptCount );
+		           idStr.c_str(), info.postScriptCount );
 		result = (AllowDuplicates() || AllowGarbage()) ?
 				EVENT_BAD_EVENT : EVENT_ERROR;
 	}
@@ -233,14 +211,14 @@ CheckEvents::CheckPostTerm(const MyString &idStr,
 
 //-----------------------------------------------------------------------------
 void
-CheckEvents::CheckJobFinal(const MyString &idStr,
-		const CondorID &id, const JobInfo *info,
-		MyString &errorMsg, check_event_result_t &result)
+CheckEvents::CheckJobFinal(const std::string &idStr,
+		const CondorID &id, const JobInfo &info,
+		std::string &errorMsg, check_event_result_t &result)
 {
 		// Allow for the case where we ran a post script after all submit
 		// attempts fail.
-	if ( noSubmitId == id && info->submitCount == 0 && info->termCount == 0 &&
-			info->postScriptCount >= 1 ) {
+	if ( noSubmitId == id && info.submitCount == 0 && info.termCount == 0 &&
+			info.postScriptCount >= 1 ) {
 		return;
 	}
 
@@ -249,25 +227,25 @@ CheckEvents::CheckJobFinal(const MyString &idStr,
 		return;
 	}
 
-	if ( info->submitCount != 1 ) {
+	if ( info.submitCount != 1 ) {
 		formatstr( errorMsg, "%s ended, submit count != 1 (%d)",
-		           idStr.c_str(), info->submitCount );
+		           idStr.c_str(), info.submitCount );
 		result = (AllowAlmostAll() ||
-				(AllowGarbage() && (info->submitCount <= 1))) ?
+				(AllowGarbage() && (info.submitCount <= 1))) ?
 				EVENT_BAD_EVENT : EVENT_ERROR;
 	}
 
-	if ( info->TotalEndCount() != 1 ) {
+	if ( info.TotalEndCount() != 1 ) {
 		formatstr( errorMsg, "%s ended, total end count != 1 (%d)",
-		           idStr.c_str(), info->TotalEndCount() );
+		           idStr.c_str(), info.TotalEndCount() );
 		if ( AllowExtraAborts() &&
-				(info->abortCount == 1) && (info->termCount == 1) ) {
+				(info.abortCount == 1) && (info.termCount == 1) ) {
 			result = EVENT_BAD_EVENT;
-		} else if ( AllowDoubleTerm() && (info->termCount == 2) ) {
+		} else if ( AllowDoubleTerm() && (info.termCount == 2) ) {
 			result = EVENT_BAD_EVENT;
 		} else if ( AllowExtraRuns() ) {
 			result = EVENT_BAD_EVENT;
-		} else if ( AllowGarbage() && info->TotalEndCount() == 0 ) {
+		} else if ( AllowGarbage() && info.TotalEndCount() == 0 ) {
 			result = EVENT_BAD_EVENT;
 		} else if ( AllowDuplicates() ) {
 				// Note: should we check here that we don't have some
@@ -278,9 +256,9 @@ CheckEvents::CheckJobFinal(const MyString &idStr,
 		}
 	}
 
-	if ( info->postScriptCount > 1 ) {
+	if ( info.postScriptCount > 1 ) {
 		formatstr( errorMsg, "%s ended, post script count > 1 (%d)",
-		           idStr.c_str(), info->postScriptCount );
+		           idStr.c_str(), info.postScriptCount );
 		result = (AllowDuplicates() || AllowGarbage()) ?
 				EVENT_BAD_EVENT : EVENT_ERROR;
 	}
@@ -291,38 +269,26 @@ CheckEvents::CheckJobFinal(const MyString &idStr,
 CheckEvents::check_event_result_t
 CheckEvents::CheckAllJobs(std::string &errorMsg)
 {
-	MyString ms;
-	auto rv = CheckAllJobs(ms);
-	errorMsg = ms; // unconditional assignment in CheckAllJobs().
-	return rv;
-}
-
-CheckEvents::check_event_result_t
-CheckEvents::CheckAllJobs(MyString &errorMsg)
-{
 	check_event_result_t	result = EVENT_OKAY;
 	errorMsg = "";
 
 	const int	MAX_MSG_LEN = 1024;
 	bool		msgFull = false; // message length has hit max
 
-	CondorID	id;
-	JobInfo *info = NULL;
-	jobHash.startIterations();
-	while ( jobHash.iterate(id, info) != 0 ) {
+	for (auto& [id, info] : jobHash) {
 
 			// Put a limit on the maximum message length so we don't
 			// have a chance of ending up with a ridiculously large
-			// MyString...
+			// string...
 		if ( !msgFull && (errorMsg.length() > MAX_MSG_LEN) ) {
 			errorMsg += " ...";
 			msgFull = true;
 		}
 
-		MyString	idStr("BAD EVENT: job ");
-		idStr.formatstr_cat("(%d.%d.%d)", id._cluster, id._proc, id._subproc);
+		std::string idStr("BAD EVENT: job ");
+		formatstr_cat(idStr, "(%d.%d.%d)", id._cluster, id._proc, id._subproc);
 
-		MyString	tmpMsg;
+		std::string tmpMsg;
 		CheckJobFinal(idStr, id, info, tmpMsg, result);
 		if ( tmpMsg != "" && !msgFull ) {
 			if ( errorMsg != "" ) errorMsg += "; ";

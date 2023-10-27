@@ -32,6 +32,7 @@
 #include "condor_classad.h"
 
 #include <map>
+#include <stdint.h>
 #include <string>
 #include <stack>
 using std::string;
@@ -256,7 +257,8 @@ public:
 	void compute_config();      // what compute(A_STATIC | A_SHARED) used to do
 	void compute_for_update();  // formerly compute(A_UPDATE | A_SHARED) -  before we send ads to the collector
 	void compute_for_policy();  // formerly compute(A_TIMEOUT | A_SHARED) - before we evaluate policy like PREEMPT
-	void update_condor_load(float load) {
+
+	void update_condor_load(double load) {
 		m_condor_load = load;
 		if( m_condor_load > m_load ) {
 			m_condor_load = m_load;
@@ -287,8 +289,8 @@ public:
 	long long		virt_mem()	const { return m_virt_mem; };
 	long long		total_disk() const { return m_total_disk; }
 	bool			always_recompute_disk() const { return m_always_recompute_disk; }
-	float		load()			const { return m_load; };
-	float		condor_load()	const { return m_condor_load; };
+	double		load()			const { return m_load; };
+	double		condor_load()	const { return m_condor_load; };
 	time_t		keyboard_idle() const { return m_idle; };
 	time_t		console_idle()	const { return m_console_idle; };
 	const slotres_map_t& machres() const { return m_machres_map; }
@@ -306,9 +308,9 @@ public:
 private:
 
 		// Dynamic info
-	float			m_load;
-	float			m_condor_load;
-	float			m_owner_load;
+	double			m_load;
+	double			m_condor_load;
+	double			m_owner_load;
 	long long		m_virt_mem;
 	time_t			m_idle;
 	time_t			m_console_idle;
@@ -320,6 +322,8 @@ private:
 	int				m_clock_day;
 	int				m_clock_min;
 	List<AttribValue> m_lst_dynamic;    // list of user specified dynamic Attributes
+	int64_t			m_docker_cached_image_size;  // Size in bytes of our cached docker images -1 means unknown
+	time_t			m_docker_cached_image_size_time;
 #if defined(WIN32)
 	char*			m_local_credd;
 	time_t			m_last_credd_test;
@@ -399,7 +403,7 @@ public:
 	friend class AvailAttributes;
 	friend class ResBag;
 
-	CpuAttributes( MachAttributes*, int slot_type, double num_cpus,
+	CpuAttributes( MachAttributes*, unsigned int slot_type, double num_cpus,
 				   int num_phys_mem, double virt_mem_fraction,
 				   double disk_fraction,
 				   const slotres_map_t& slotres_map,
@@ -415,20 +419,20 @@ public:
 	void publish_dynamic(ClassAd*) const;  // Publish desired info to given CA
 	void compute_virt_mem();
 	void compute_disk();
-	void set_condor_load(float load) { c_condor_load = load; }
+	void set_condor_load(double load) { c_condor_load = load; }
 
 		// Load average methods
-	float condor_load() const { return c_condor_load; };
-	float owner_load() const { return c_owner_load; };
-	float total_load() const { return c_owner_load + c_condor_load; };
-	void set_owner_load( float v ) { c_owner_load = v; };
+	double condor_load() const { return c_condor_load; };
+	double owner_load() const { return c_owner_load; };
+	double total_load() const { return c_owner_load + c_condor_load; };
+	void set_owner_load( double v ) { c_owner_load = v; };
 
 		// Keyboad activity methods
 	void set_keyboard( time_t k ) { c_idle = k; };
 	void set_console( time_t k ) { c_console_idle = k; };
 	time_t keyboard_idle() const { return c_idle; };
 	time_t console_idle() const { return c_console_idle; };
-	int	type() const { return c_type; };
+	unsigned int type_id() const { return c_type_id; };
 
 	void display(int dpf_flags) const;
 	void dprintf( int, const char*, ... ) const;
@@ -464,8 +468,8 @@ private:
 	MachAttributes*	map;
 
 		// Dynamic info
-	float			c_condor_load;
-	float			c_owner_load;
+	double			c_condor_load;
+	double			c_owner_load;
 	time_t			c_idle;
 	time_t			c_console_idle;
 	long long c_virt_mem;
@@ -500,7 +504,7 @@ private:
 	std::string     c_execute_dir;
 	std::string     c_execute_partition_id;  // unique id for partition
 
-	int				c_type;		// The type of this resource
+	unsigned int	c_type_id;		// The slot type of this resource
 
 #ifdef LINUX
 	VolumeManager *m_volume_mgr{nullptr};
@@ -542,7 +546,7 @@ class AvailDiskPartition
 		m_disk_fraction = 1.0;
 		m_auto_count = 0;
 	}
-	float m_disk_fraction; // share of this partition that is not taken yet
+	double m_disk_fraction; // share of this partition that is not taken yet
 	int m_auto_count; // number of slots using "auto" share of this partition
 };
 

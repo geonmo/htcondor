@@ -160,10 +160,9 @@ DWORD RemoteFindAndCloseA ( PCSTR filename, PCSTR filter )  {
         filter );
 
     DWORD last_error = 0;
-    MyString deviceFileName;
-    MyString fsFilePath;
-    MyString name;
-    MyString processName;
+	std::string deviceFileName;
+	std::string name;
+	std::string processName;
     SystemHandleInformation hi;
     SystemProcessInformation pi;
     SystemProcessInformation::SYSTEM_PROCESS_INFORMATION* pPi;
@@ -196,14 +195,17 @@ DWORD RemoteFindAndCloseA ( PCSTR filename, PCSTR filter )  {
 
     while ( it.Next ( h ) ) {
 
-        if ( 0 == pi.m_ProcessInfos.lookup ( h.ProcessID, pPi ) )
+        auto spi_it = pi.m_ProcessInfos.find(h.ProcessID);
+        if (spi_it == pi.m_ProcessInfos.end())
             continue;
+
+        pPi = spi_it->second;
         
         if ( pPi == NULL )
             continue;
         
         //Get the process name
-        SystemInfoUtils::Unicode2MyString ( &pPi->usName, processName );
+        SystemInfoUtils::Unicode2String ( &pPi->usName, processName );
 
         //what's the file name for this given handle?
         hi.GetName( (HANDLE)h.HandleNumber, name, h.ProcessID );
@@ -214,7 +216,7 @@ DWORD RemoteFindAndCloseA ( PCSTR filename, PCSTR filter )  {
             dprintf ( 
                 D_FULLDEBUG, 
                 "RemoteCloseA: Closing handle in process '%s' (%u)", 
-                processName.Value (), 
+                processName.c_str (), 
                 h.ProcessID );
 
             last_error = CloseRemoteHandle ( 

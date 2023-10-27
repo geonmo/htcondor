@@ -51,8 +51,6 @@ static bool test_lookup_string_long(void);
 static bool test_lookup_string_file(void);
 static bool test_get_my_type_name_no(void);
 static bool test_get_my_type_name_yes(void);
-static bool test_get_target_type_name_no(void);
-static bool test_get_target_type_name_yes(void);
 static bool test_is_a_match_true(void);
 static bool test_is_a_match_true_reverse(void);
 static bool test_is_a_match_false_memory(void);
@@ -335,8 +333,6 @@ bool OTEST_Old_Classads(void) {
 	driver.register_function(test_lookup_string_file);
 	driver.register_function(test_get_my_type_name_no);
 	driver.register_function(test_get_my_type_name_yes);
-	driver.register_function(test_get_target_type_name_no);
-	driver.register_function(test_get_target_type_name_yes);
 	driver.register_function(test_is_a_match_true);
 	driver.register_function(test_is_a_match_true_reverse);
 	driver.register_function(test_is_a_match_false_memory);
@@ -900,7 +896,7 @@ static bool test_lookup_expr_error_or_false() {
 	const char* attribute_name = "E";
 	ExprTree * tree = classad.LookupExpr(attribute_name);
 	classad::Value val;
-	int actual1 = EvalExprTree(tree, &classad, NULL, val);
+	int actual1 = EvalExprToScalar(tree, &classad, NULL, val);
 	int actual2 = (val.GetType() == classad::Value::ERROR_VALUE);
 	int expect = 1;
 	emit_input_header();
@@ -927,7 +923,7 @@ static bool test_lookup_expr_error_and() {
 	const char* attribute_name = "L";
 	ExprTree * tree = classad.LookupExpr(attribute_name);
 	classad::Value val;
-	int actual1 = EvalExprTree(tree, &classad, NULL, val);
+	int actual1 = EvalExprToScalar(tree, &classad, NULL, val);
 	int actual2 = (val.GetType() == classad::Value::ERROR_VALUE);
 	int expect = 1;
 	emit_input_header();
@@ -954,7 +950,7 @@ static bool test_lookup_expr_error_and_true() {
 	const char* attribute_name = "M";
 	ExprTree * tree = classad.LookupExpr(attribute_name);
 	classad::Value val;
-	int actual1 = EvalExprTree(tree, &classad, NULL, val);
+	int actual1 = EvalExprToScalar(tree, &classad, NULL, val);
 	int actual2 = (val.GetType() == classad::Value::ERROR_VALUE);
 	int expect = 1;
 	emit_input_header();
@@ -1092,48 +1088,6 @@ static bool test_get_my_type_name_yes() {
 	initAdFromString(classad_string, classad);
 	const char* expect = "foo";
 	const char* result = GetMyTypeName(classad);
-	emit_input_header();
-	emit_param("ClassAd", classad_string);
-	emit_output_expected_header();
-	emit_retval("%s", expect);
-	emit_output_actual_header();
-	emit_retval("%s", result);
-	if(strcmp(result, expect) != MATCH) {
-		FAIL;
-	}
-	PASS;
-}
-
-static bool test_get_target_type_name_no() {
-	emit_test("Test GetTargetTypeName() on a classad that doesn't have a "
-		"target type name.");
-	const char* classad_string = "\tA = 1\n\t\tB=2\n\t\tC = 3\n\t\t"
-		"D='2001-04-05T12:14:15'\n\t\tG=GetTime(1)\n\t\tH=foo(1)";
-	ClassAd classad;
-	initAdFromString(classad_string, classad);
-	const char* expect = "";
-	const char* result = GetTargetTypeName(classad);
-	emit_input_header();
-	emit_param("ClassAd", classad_string);
-	emit_output_expected_header();
-	emit_retval("%s", expect);
-	emit_output_actual_header();
-	emit_retval("%s", result);
-	if(strcmp(result, expect) != MATCH) {
-		FAIL;
-	}
-	PASS;
-}
-
-static bool test_get_target_type_name_yes() {
-	emit_test("Test GetTargetTypeName() on a classad that has a target type"
-		" name.");
-	const char* classad_string = "\tA = 0.7\n\t\tB=2\n\t\tC = 3\n\t\t"
-		"D = \"alain\"\n\t\tMyType=\"foo\"\n\t\tTargetType=\"blah\"";
-	ClassAd classad;
-	initAdFromString(classad_string, classad);
-	const char* expect = "blah";
-	const char* result = GetTargetTypeName(classad);
 	emit_input_header();
 	emit_param("ClassAd", classad_string);
 	emit_output_expected_header();
@@ -1394,12 +1348,13 @@ static bool test_expr_tree_to_string_big() {
 		"classad.");
 	emit_comment("The attribute name and string are not printed here due to "
 		"the large size of the strings.");
-	char* expect = (char *) malloc(25000 + 2 + 1);
+	size_t expect_sz = 25000 + 2 +1;
+	char* expect = (char *) malloc(expect_sz);
 	if ( ! expect) { FAIL; }
 	char* attribute_name, *expectString;
 	make_big_string(15000, &attribute_name, NULL);
 	make_big_string(25000, &expectString, NULL);
-	sprintf(expect, "\"%s\"", expectString);
+	snprintf(expect, expect_sz, "\"%s\"", expectString);
 	ClassAd classad;
 	classad.Assign(attribute_name, expectString);
 	ExprTree* expr = classad.LookupExpr(attribute_name);
@@ -7939,7 +7894,7 @@ static bool test_nested_ads()
 	}
 	
 	classad::Value val;
-	EvalExprTree(tree, &ad, NULL, val);
+	EvalExprToScalar(tree, &ad, NULL, val);
 	if (val.GetType() != classad::Value::UNDEFINED_VALUE) {
 		FAIL;
 	}

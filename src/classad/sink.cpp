@@ -26,7 +26,10 @@
 
 #include <math.h>
 
-using namespace std;
+using std::string;
+using std::vector;
+using std::pair;
+
 
 namespace classad {
 
@@ -128,7 +131,7 @@ Unparse( string &buffer, const Value &val )
 						default:
 							if( !isprint( *itr ) ) {
 									// print octal representation
-								sprintf( tempBuf, "\\%03o", (unsigned char)*itr );
+								snprintf( tempBuf, sizeof(tempBuf), "\\%03o", (unsigned char)*itr );
 								buffer += tempBuf;
 								continue;
 							}
@@ -165,7 +168,7 @@ Unparse( string &buffer, const Value &val )
                 // We also want to print it with as few
                 // digits as possible, which is why we don't use the 
                 // case below.
-                sprintf(tempBuf, "%.1f", real);
+                snprintf(tempBuf, sizeof(tempBuf), "%.1f", real);
                 buffer += tempBuf;
             } else if (classad_isnan(real)) {
                 buffer += "real(\"NaN\")";
@@ -174,7 +177,7 @@ Unparse( string &buffer, const Value &val )
             } else if (classad_isinf(real) == 1) {
                 buffer += "real(\"INF\")";
             } else if (oldClassAd) {
-                sprintf(tempBuf, "%.16G", real);
+                snprintf(tempBuf, sizeof(tempBuf), "%.16G", real);
                 // %G may print something that looks like an integer or exponent.
                 // In that case, tack on a ".0"
                 if (tempBuf[strcspn(tempBuf, ".Ee")] == '\0') {
@@ -182,7 +185,7 @@ Unparse( string &buffer, const Value &val )
                 }
                 buffer += tempBuf;
             } else {
-                sprintf(tempBuf, "%1.15E", real);
+                snprintf(tempBuf, sizeof(tempBuf), "%1.15E", real);
                 buffer += tempBuf;
             }
 			return;
@@ -255,15 +258,9 @@ Unparse( string &buffer, const ExprTree *tree )
 
 	switch( tree->GetKind( ) ) {
 		case ExprTree::LITERAL_NODE: {
-#if 0
-			Value::NumberFactor factor;
-			const Value & val = ((const Literal*)tree)->getValue(factor);
-#else
 			Value				val;
-			Value::NumberFactor	factor;
-			((Literal*)tree)->GetComponents( val, factor );
-#endif
-			UnparseAux( buffer, val, factor );
+			((Literal*)tree)->GetComponents( val);
+			UnparseAux( buffer, val);
 			return;
 		}
 
@@ -346,17 +343,9 @@ Unparse( string &buffer, const ClassAd *ad, const References &whitelist )
 
 
 void ClassAdUnParser::
-UnparseAux( string &buffer, const Value &val, Value::NumberFactor factor )
+UnparseAux( string &buffer, const Value &val)
 {
 	Unparse( buffer, val );
-	if( ( val.IsIntegerValue() || val.IsRealValue() ) && factor != Value::NO_FACTOR ) {
-		buffer += (factor==Value::B_FACTOR)?"B"  :
-					(factor==Value::K_FACTOR)?"K": 
-					(factor==Value::M_FACTOR)?"M":
-					(factor==Value::G_FACTOR)?"G": 
-					(factor==Value::T_FACTOR)?"T": 
-					"<error:bad factor>";
-	}
 	return;
 }
 

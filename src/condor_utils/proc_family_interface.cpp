@@ -20,13 +20,32 @@
 
 #include "condor_common.h"
 #include "condor_config.h"
+#include "condor_daemon_core.h"
 #include "condor_debug.h"
 #include "proc_family_interface.h"
 #include "proc_family_proxy.h"
 #include "proc_family_direct.h"
 
-ProcFamilyInterface* ProcFamilyInterface::create(const char* subsys)
+#ifdef LINUX
+#include "proc_family_direct_cgroup_v1.h"
+#include "proc_family_direct_cgroup_v2.h"
+#endif
+
+ProcFamilyInterface* ProcFamilyInterface::create(FamilyInfo *fi, const char* subsys)
 {
+	// If we want cgroups, use the direct, in-process version if possible
+#ifdef LINUX
+	if (fi && fi->cgroup && ProcFamilyDirectCgroupV2::can_create_cgroup_v2()) {
+		return new ProcFamilyDirectCgroupV2;
+	}
+	std::string scgroup = (fi && fi->cgroup) ? fi->cgroup : "";
+	if (fi && fi->cgroup && ProcFamilyDirectCgroupV1::can_create_cgroup_v1(scgroup)) {
+		return new ProcFamilyDirectCgroupV1;
+	}
+#else
+	(void)fi; // shut the compiler up
+#endif
+
 	ProcFamilyInterface* ptr;
 
 	bool is_master = ((subsys != NULL) && !strcmp(subsys, "MASTER"));

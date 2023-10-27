@@ -1,5 +1,16 @@
 #!/usr/bin/env pytest
 
+#testreq: personal
+"""<<CONDOR_TESTREQ_CONFIG
+	# make sure that file transfer plugins are enabled (might be disabled by default)
+	ENABLE_URL_TRANSFERS = true
+	FILETRANSFER_PLUGINS = $(LIBEXEC)/curl_plugin $(LIBEXEC)/data_plugin
+	# test expects at least 2 different SlotIds
+	use FEATURE : StaticSlots
+"""
+#endtestreq
+
+
 import logging
 import os
 from pathlib import Path

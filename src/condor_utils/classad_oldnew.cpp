@@ -480,9 +480,9 @@ int mergeProjectionFromQueryAd(classad::ClassAd & queryAd, const char * attr_pro
 
 	classad::ExprList *list = NULL;
 	if (allow_list && value.IsListValue(list)) {
-		for (classad::ExprList::const_iterator it = list->begin(); it != list->end(); it++) {
+		for (auto it : *list) {
 			std::string attr;
-			if (!(*it)->Evaluate(value) || !value.IsStringValue(attr)) {
+			if (!ExprTreeIsLiteralString(it, attr)) {
 				return -2;
 			}
 			projection.insert(attr);
@@ -580,7 +580,7 @@ static int _putClassAdTrailingInfo(Stream *sock, const classad::ClassAd& /* ad *
 
         static const char fmt[] = ATTR_SERVER_TIME " = %ld";
         char buf[sizeof(fmt) + 12]; //+12 for time value
-        sprintf(buf, fmt, (long)time(NULL));
+        snprintf(buf, sizeof(buf), fmt, (long)time(NULL));
         if (!sock->put(buf)) {
             return false;
         }

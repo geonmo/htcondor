@@ -181,7 +181,7 @@ int main(int argc, const char *argv[])
 		} else if (is_dash_arg_colon_prefix(argv[i], "diagnostic", &pcolon, 4)) {
 			dash_diagnostic = JOB_ROUTER_TOOL_FLAG_DIAGNOSTIC;
 			if (pcolon) {
-				StringTokenIterator it(++pcolon,40,",");
+				StringTokenIterator it(++pcolon,",");
 				for (const char * opt = it.first(); opt; opt = it.next()) {
 					if (is_arg_prefix(opt, "match")) {
 						dash_diagnostic |= JOB_ROUTER_TOOL_FLAG_DEBUG_UMBRELLA;
@@ -311,6 +311,23 @@ int main(int argc, const char *argv[])
 		} else {
 			fprintf(stdout, "There are no jobs to match\n");
 		}
+	}
+
+	// TODO: Remove this when these config options are removed
+	std::string deprecated[4] = {"JOB_ROUTER_DEFAULTS", "JOB_ROUTER_ENTRIES", "JOB_ROUTER_ENTRIES_CMD", "JOB_ROUTER_ENTRIES_FILE"};
+	std::string found = "";
+	for (const auto& knob : deprecated) {
+		if (param_defined(knob.c_str())) {
+			if (! found.empty()) found += ", ";
+			found += knob;
+		}
+	}
+	if (! found.empty()) {
+		fprintf(stdout,
+			"\nWARNING: %s are deprecated and will be removed for V24 of HTCondor. New configuration"
+			" syntax for the job router is defined using JOB_ROUTER_ROUTE_NAMES and JOB_ROUTER_ROUTE_<name>."
+			" Note: The removal will occur during the lifetime of the HTCondor V23 feature series\n",
+			found.c_str());
 	}
 
 	return 0;
@@ -503,7 +520,7 @@ void Scheduler::poll()  { }
 
 
 // 
-JobRouterHookMgr::JobRouterHookMgr() : HookClientMgr(), m_warn_cleanup(false), m_warn_update(false), m_warn_translate(false), m_warn_exit(false),NUM_HOOKS(0), UNDEFINED("UNDEFINED"), m_default_hook_keyword(NULL), m_hook_paths(hashFunction) {}
+JobRouterHookMgr::JobRouterHookMgr() : HookClientMgr(), m_warn_cleanup(false), m_warn_update(false), m_warn_translate(false), m_warn_exit(false),NUM_HOOKS(0), UNDEFINED("UNDEFINED"), m_default_hook_keyword(NULL) {}
 JobRouterHookMgr::~JobRouterHookMgr() {};
 bool JobRouterHookMgr::initialize() { reconfig(); return true; /*HookClientMgr::initialize()*/; }
 bool JobRouterHookMgr::reconfig() { m_default_hook_keyword = param("JOB_ROUTER_HOOK_KEYWORD"); return true; }

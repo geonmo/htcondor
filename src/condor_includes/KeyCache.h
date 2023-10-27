@@ -24,43 +24,26 @@
 #include "condor_common.h"
 #include "condor_classad.h"
 #include "CryptKey.h"
-#include "HashTable.h"
-#include "string_list.h"
-#include "simplelist.h"
-#include "condor_sockaddr.h"
 
-class SecMan;
 class KeyCacheEntry {
  public:
     KeyCacheEntry(
 			const std::string& id,
 			const std::string& addr,
-			const KeyInfo * key,
-			const ClassAd * policy,
-			int expiration,
+			std::vector<KeyInfo> key,
+			const ClassAd & policy,
+			time_t expiration,
 			int session_lease
 			);
-    KeyCacheEntry(
-			const std::string& id,
-			const std::string& addr,
-			std::vector<KeyInfo *> key,
-			const ClassAd * policy,
-			int expiration,
-			int session_lease
-			);
-    KeyCacheEntry(const KeyCacheEntry &copy);
-    ~KeyCacheEntry();
-
-	const KeyCacheEntry& operator=(const KeyCacheEntry &kc);
 
 	const std::string&    id() const { return _id; }
 	const std::string&    addr() const { return _addr; }
     KeyInfo*              key();
     KeyInfo*              key(Protocol protocol);
     ClassAd*              policy();
-    int                   expiration() const;
+    time_t                expiration() const;
 	char const *          expirationType() const;
-	void                  setExpiration(int new_expiration);
+	void                  setExpiration(time_t new_expiration);
 	void                  setLingerFlag(bool flag) { _lingering = flag; }
 	bool                  getLingerFlag() const { return _lingering; }
 	bool                  setPreferredProtocol(Protocol preferred);
@@ -70,14 +53,11 @@ class KeyCacheEntry {
 	void                  renewLease();
  private:
 
-	void delete_storage();
-	void copy_storage(const KeyCacheEntry &);
-
 	std::string           _id;
 	std::string           _addr;
-	std::vector<KeyInfo*> _keys;
-    ClassAd*             _policy;
-    int                  _expiration;
+	std::vector<KeyInfo>  _keys;
+    ClassAd              _policy;
+    time_t               _expiration;
 	int                  _lease_interval;   // max seconds of unused time
 	time_t               _lease_expiration; // time of lease expiration
 	bool                 _lingering; // true if session only exists
@@ -87,30 +67,7 @@ class KeyCacheEntry {
 };
 
 
-
-class KeyCache {
-    friend class SecMan;
-public:
-	KeyCache();
-	KeyCache(const KeyCache&);
-	~KeyCache();
-	const KeyCache& operator=(const KeyCache&);
-
-	void clear();
-	bool insert(KeyCacheEntry&);
-	bool lookup(const char *key_id, KeyCacheEntry*&);
-	bool remove(const char *key_id);
-	void expire(KeyCacheEntry*);
-	int  count();
-
-	StringList * getExpiredKeys();
-
-private:
-	void copy_storage(const KeyCache &kc);
-	void delete_storage();
-
-	HashTable<std::string, KeyCacheEntry*> *key_table;
-};
+using KeyCache = std::map<std::string, KeyCacheEntry, std::less<>>;
 
 
 #endif

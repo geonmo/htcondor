@@ -24,7 +24,6 @@
 #include "timed_queue.h"
 #include "generic_stats.h"
 #include "classad_helpers.h" // for canStringForUseAsAttr
-#include "string_list.h"     // for StringList
 #include "condor_config.h"
 
 // specialize AdvanceBy for simple types so that we can use a more efficient algorithm.
@@ -52,7 +51,7 @@ void stats_entry_recent<T>::PublishDebug(ClassAd & ad, const char * pattr, int f
       str += "]";
       }
 
-   MyString attr(pattr);
+   std::string attr(pattr);
    if (flags & this->PubDecorateAttr)
       attr += "Debug";
 
@@ -75,7 +74,7 @@ void stats_entry_recent<int64_t>::PublishDebug(ClassAd & ad, const char * pattr,
       str += "]";
       }
 
-   MyString attr(pattr);
+   std::string attr(pattr);
    if (flags & this->PubDecorateAttr)
       attr += "Debug";
 
@@ -95,7 +94,7 @@ void stats_entry_recent<double>::PublishDebug(ClassAd & ad, const char * pattr, 
       str += "]";
       }
 
-   MyString attr(pattr);
+   std::string attr(pattr);
    if (flags & this->PubDecorateAttr)
       attr += "Debug";
 
@@ -126,7 +125,7 @@ void stats_entry_recent_histogram<T>::PublishDebug(ClassAd & ad, const char * pa
       str += ")]";
       }
 
-   MyString attr(pattr);
+   std::string attr(pattr);
    if (flags & this->PubDecorateAttr)
       attr += "Debug";
 
@@ -219,18 +218,15 @@ int generic_stats_ParseConfigString(
     if ( ! config[0] || MATCH == strcasecmp(config,"NONE"))
        return 0;
 
-    // tokenize the list on , or space
-    StringList items;
-    items.initializeFromString(config);
-
     // if the config string is non-trivial, then it must contain either our pool_name
     // or pool_alt or "DEFAULT" or "ALL" or we do not publish this pool.
     int PublishFlags = 0;
 
     // walk the list, looking for items that match our pool name or the keyword DEFAULT or ALL
-    // 
-    items.rewind();
-    while (const char * p = items.next()) {
+    //
+    // tokenize the list on , or space
+    for (auto& item : StringTokenIterator(config)) {
+       const char * p = item.c_str();
 
        int flags = PublishFlags;
        const char * psep = strchr(p,':');
@@ -317,8 +313,8 @@ void stats_recent_counter_timer::Publish(ClassAd & ad, const char * pattr, int f
    if ((flags & IF_NONZERO) && (this->count.value == 0) && (this->count.recent == 0))
       return;
 
-   MyString attr(pattr);
-   MyString attrR("Recent");
+   std::string attr(pattr);
+   std::string attrR("Recent");
    attrR += pattr;
 
    ClassAdAssign(ad, attr.c_str(), this->count.value);
@@ -338,7 +334,7 @@ void stats_recent_counter_timer::PublishDebug(ClassAd & ad, const char * pattr, 
 
    this->count.PublishDebug(ad, pattr, flags);
 
-   MyString attr(pattr);
+   std::string attr(pattr);
    attr += "Runtime";
    this->runtime.PublishDebug(ad, attr.c_str(), flags);
 }
@@ -473,34 +469,34 @@ double Probe::Std() const
 }
 
 
-void ProbeToStringDebug(MyString & str, const Probe& probe)
+void ProbeToStringDebug(std::string & str, const Probe& probe)
 {
-   str.formatstr("%d M:%g m:%g S:%g s2:%g", 
-               probe.Count, probe.Max, probe.Min, probe.Sum, probe.SumSq);
+   formatstr(str, "%d M:%g m:%g S:%g s2:%g",
+             probe.Count, probe.Max, probe.Min, probe.Sum, probe.SumSq);
 }
 
 int ClassAdAssign(ClassAd & ad, const char * pattr, const Probe& probe) 
 {
-   MyString attr;
-   attr.formatstr("%sCount", pattr);
-   ad.Assign(attr.c_str(), probe.Count);
+   std::string attr;
+   formatstr(attr, "%sCount", pattr);
+   ad.Assign(attr, probe.Count);
 
-   attr.formatstr("%sSum", pattr);
-   int ret = ad.Assign(attr.c_str(), probe.Sum);
+   formatstr(attr, "%sSum", pattr);
+   int ret = ad.Assign(attr, probe.Sum);
 
    if (probe.Count > 0)
       {
-      attr.formatstr("%sAvg", pattr);
-      ad.Assign(attr.c_str(), probe.Avg());
+      formatstr(attr, "%sAvg", pattr);
+      ad.Assign(attr, probe.Avg());
 
-      attr.formatstr("%sMin", pattr);
-      ad.Assign(attr.c_str(), probe.Min);
+      formatstr(attr, "%sMin", pattr);
+      ad.Assign(attr, probe.Min);
 
-      attr.formatstr("%sMax", pattr);
-      ad.Assign(attr.c_str(), probe.Max);
+      formatstr(attr, "%sMax", pattr);
+      ad.Assign(attr, probe.Max);
 
-      attr.formatstr("%sStd", pattr);
-      ad.Assign(attr.c_str(), probe.Std());
+      formatstr(attr, "%sStd", pattr);
+      ad.Assign(attr, probe.Std());
       }
    return ret;
 }
@@ -513,45 +509,45 @@ int ClassAdAssign(ClassAd & ad, const char * pattr, const Probe& probe, int Deta
 
    int ret = -1;
 
-   MyString attr;
+   std::string attr;
    if (DetailMode == ProbeDetailMode_Brief) {
       // for Brief, publish the Avg without a suffix, and the Min & Max using their normal names
       double avg = probe.Avg();
       ret = ad.Assign(pattr, avg);
       double val = MIN(avg, probe.Min);
       if ( ! if_nonzero || val > 0.0 || val < 0.0) {
-         attr.formatstr("%sMin", pattr);
-         ad.Assign(attr.c_str(), val);
+         formatstr(attr, "%sMin", pattr);
+         ad.Assign(attr, val);
       }
       val = MAX(avg, probe.Max);
       if ( ! if_nonzero || val > 0.0 || val < 0.0) {
-         attr.formatstr("%sMax", pattr);
-         ad.Assign(attr.c_str(), val);
+         formatstr(attr, "%sMax", pattr);
+         ad.Assign(attr, val);
       }
    } else if (DetailMode == ProbeDetailMode_RT_SUM) {
       // for RT_SUM, publish the count without a suffix and the Sum as "Runtime"
       // this gives sort of probe is useful for function/process timings.
       ret = ad.Assign(pattr, probe.Count);
-      attr.formatstr("%sRuntime", pattr);
-      ad.Assign(attr.c_str(), probe.Sum);
+      formatstr(attr, "%sRuntime", pattr);
+      ad.Assign(attr, probe.Sum);
    } else if (DetailMode == ProbeDetailMode_Tot) {
       // for Totals, publish the Sum without a suffix
       ret = ad.Assign(pattr, (long long)probe.Sum);
    } else if (DetailMode == ProbeDetailMode_CAMM) {
       // for CAMM, publish the Avg and the Min & Max and Count using their normal names
       // publish Avg, Min and Max only if count is non-zero
-      attr.formatstr("%sCount", pattr);
-      ret = ad.Assign(attr.c_str(), probe.Count);
+      formatstr(attr, "%sCount", pattr);
+      ret = ad.Assign(attr, probe.Count);
 
       if (probe.Count != 0) {
-         attr.formatstr("%sAvg", pattr);
-         ad.Assign(attr.c_str(), probe.Avg());
+         formatstr(attr, "%sAvg", pattr);
+         ad.Assign(attr, probe.Avg());
 
-         attr.formatstr("%sMin", pattr);
-         ad.Assign(attr.c_str(), probe.Min);
+         formatstr(attr, "%sMin", pattr);
+         ad.Assign(attr, probe.Min);
 
-         attr.formatstr("%sMax", pattr);
-         ad.Assign(attr.c_str(), probe.Max);
+         formatstr(attr, "%sMax", pattr);
+         ad.Assign(attr, probe.Max);
       }
    }
    return ret;
@@ -559,27 +555,27 @@ int ClassAdAssign(ClassAd & ad, const char * pattr, const Probe& probe, int Deta
 
 template <> void stats_entry_recent<Probe>::Unpublish(ClassAd& ad, const char * pattr) const
 {
-   MyString attr;
+   std::string attr;
    ad.Delete(pattr);
-   attr.formatstr("Recent%s", pattr);
+   formatstr(attr, "Recent%s", pattr);
    ad.Delete(attr.c_str());
 
-   attr.formatstr("Recent%sCount", pattr);
+   formatstr(attr, "Recent%sCount", pattr);
    ad.Delete(attr.c_str());
    ad.Delete(attr.c_str()+6);
-   attr.formatstr("Recent%sSum", pattr);
+   formatstr(attr, "Recent%sSum", pattr);
    ad.Delete(attr.c_str());
    ad.Delete(attr.c_str()+6);
-   attr.formatstr("Recent%sAvg", pattr);
+   formatstr(attr, "Recent%sAvg", pattr);
    ad.Delete(attr.c_str());
    ad.Delete(attr.c_str()+6);
-   attr.formatstr("Recent%sMin", pattr);
+   formatstr(attr, "Recent%sMin", pattr);
    ad.Delete(attr.c_str());
    ad.Delete(attr.c_str()+6);
-   attr.formatstr("Recent%sMax", pattr);
+   formatstr(attr, "Recent%sMax", pattr);
    ad.Delete(attr.c_str());
    ad.Delete(attr.c_str()+6);
-   attr.formatstr("Recent%sStd", pattr);
+   formatstr(attr, "Recent%sStd", pattr);
    ad.Delete(attr.c_str());
    ad.Delete(attr.c_str()+6);
 }
@@ -604,9 +600,9 @@ template <> void stats_entry_recent<Probe>::Publish(ClassAd& ad, const char * pa
    ClassAdAssign(ad, pattr, this->value, flags & this->PubDetailMask, flags & IF_NONZERO);
 
    if (flags & this->PubRecent) {
-      MyString attr(pattr);
+      std::string attr(pattr);
       if (flags & this->PubDecorateAttr) {
-         attr.formatstr("Recent%s", pattr);
+         formatstr(attr, "Recent%s", pattr);
       }
       ClassAdAssign(ad, attr.c_str(), recent, flags & this->PubDetailMask, flags & IF_NONZERO);
    }
@@ -616,8 +612,8 @@ template <>
 void stats_entry_recent<Probe>::PublishDebug(ClassAd & ad, const char * pattr, int flags) const
 {
    std::string str;
-   MyString var1;
-   MyString var2;
+   std::string var1;
+   std::string var2;
    ProbeToStringDebug(var1, this->value);
    ProbeToStringDebug(var2, this->recent);
 
@@ -632,7 +628,7 @@ void stats_entry_recent<Probe>::PublishDebug(ClassAd & ad, const char * pattr, i
       str += "]";
       }
 
-   MyString attr(pattr);
+   std::string attr(pattr);
    if (flags & this->PubDecorateAttr)
       attr += "Debug";
 
@@ -844,7 +840,7 @@ int stats_histogram_ParseSizes(
    return cSizes; 
 }
 
-void stats_histogram_PrintSizes(MyString &  /*str*/, const  int64_t *  /*pSizes*/, int  /*cSizes*/)
+void stats_histogram_PrintSizes(std::string &  /*str*/, const  int64_t *  /*pSizes*/, int  /*cSizes*/)
 {
    EXCEPT("stats_histogram::PrintSizes not implemented");
    // tj: WRITE THIS
@@ -929,7 +925,7 @@ int stats_histogram_ParseTimes(
    return cTimes; 
 }
 
-void stats_histogram_times_PrintTimes(MyString &  /*str*/, const time_t *  /*pTimes*/, int /*cTimes*/)
+void stats_histogram_times_PrintTimes(std::string &  /*str*/, const time_t *  /*pTimes*/, int /*cTimes*/)
 {
    EXCEPT("stats_histogram::PrintTimes not implemented");
    // tj: WRITE THIS
@@ -942,7 +938,7 @@ int stats_histogram_double::ParseLimits(const char * psz, double * pLimits, int 
    return 0; 
 }
 
-void stats_histogram_sizes::PrintLimits(MyString & str, const double * pLimits, int cLimits)
+void stats_histogram_sizes::PrintLimits(std::string & str, const double * pLimits, int cLimits)
 {
    // tj: WRITE THIS
 }
@@ -953,7 +949,7 @@ int stats_histogram_int::ParseLimits(const char * psz, int * pLimits, int cMax)
    return 0; 
 }
 
-void stats_histogram_int::PrintLimits(MyString & str, const int * pLimits, int cTimes)
+void stats_histogram_int::PrintLimits(std::string & str, const int * pLimits, int cTimes)
 {
    // tj: WRITE THIS
 }
@@ -967,34 +963,29 @@ void stats_histogram_int::PrintLimits(MyString & str, const int * pLimits, int c
 StatisticsPool::~StatisticsPool()
 {
    // first delete all of the publish entries.
-   MyString name;
-   pubitem item;
-   pub.startIterations();
-   while (pub.iterate(name,item))
+   for (auto& [name, item] : zpub)
       {
-      pub.remove(name);
       if (item.fOwnedByPool && item.pattr)
          free((void*)(const_cast<char*>(item.pattr)));
       }
+   zpub.clear();
 
-   // then all of the probes. 
-   void* probe;
-   poolitem pi;
-   pool.startIterations();
-   while (pool.iterate(probe,pi))
+   // then all of the probes.
+   for (auto& [probe, pi] : pool)
       {
-      pool.remove(probe);
       if (pi.Delete)
          pi.Delete(probe);
       }
+   pool.clear();
 }
 
 int StatisticsPool::RemoveProbe (const char * name)
 {
-   pubitem item;
-   if (pub.lookup(name, item) < 0)
+   auto zpub_itr = zpub.find(name);
+   if (zpub_itr == zpub.end())
       return 0;
-   int ret =  pub.remove(name);
+   pubitem item = zpub_itr->second;
+   zpub.erase(zpub_itr);
 
    void * probe = item.pitem;
    bool fOwnedByPool = item.fOwnedByPool;
@@ -1003,19 +994,19 @@ int StatisticsPool::RemoveProbe (const char * name)
    }
 
    // remove the probe from the pool (if it's still there)
-   poolitem pi;
-   if (pool.lookup(probe, pi) >= 0) {
-      pool.remove(probe);
-      if (pi.Delete) {
-         pi.Delete(probe);
+   auto pool_itr = pool.find(probe);
+   if (pool_itr != pool.end()) {
+      if (pool_itr->second.Delete) {
+         pool_itr->second.Delete(probe);
       }
+      pool.erase(pool_itr);
    }
 
    // clear out any dangling references to the probe in the pub list.
    // 
    /*
    StatisticsPool * pthis = const_cast<StatisticsPool*>(this);
-   MyString key;
+   std::string key;
    pthis->pub.startIterations();
    while (pthis->pub.iterate(key,item)) {
       if (item.pitem == probe)
@@ -1026,7 +1017,7 @@ int StatisticsPool::RemoveProbe (const char * name)
       delete pitem;
    }
    */
-   return ret;
+   return 0;
 }
 
 int StatisticsPool::RemoveProbesByAddress(void* first, void *last)
@@ -1034,28 +1025,29 @@ int StatisticsPool::RemoveProbesByAddress(void* first, void *last)
    int cRemoved = 0;
 
    // first remove from the pub list
-   MyString key;
-   pubitem item;
-   pub.startIterations();
-   while (pub.iterate(key,item)) {
-      if (item.pitem < first || item.pitem > last)
-         continue;
-      pub.remove(key);
+   auto zpub_itr = zpub.begin();
+   while (zpub_itr != zpub.end()) {
+      if (zpub_itr->second.pitem < first || zpub_itr->second.pitem > last) {
+         zpub_itr++;
+      } else {
+         zpub_itr = zpub.erase(zpub_itr);
+      }
    }
 
    // then remove from the pool
-   void* probe;
-   poolitem item2;
-   pool.startIterations();
-   while (pool.iterate(probe,item2)) {
-      if (probe < first || probe > last)
-         continue;
+   auto pool_itr = pool.begin();
+   while (pool_itr != pool.end()) {
+      auto probe = pool_itr->first;
+	  auto item2 = pool_itr->second;
+      if (probe < first || probe > last) {
+         pool_itr++;
+	  } else {
+         ASSERT (!item2.fOwnedByPool);
+         if (item2.Delete) { item2.Delete(probe); }
 
-      ASSERT (!item2.fOwnedByPool);
-      if (item2.Delete) { item2.Delete(probe); }
-
-      pool.remove(probe);
-      ++cRemoved;
+         pool_itr = pool.erase(pool_itr);
+         ++cRemoved;
+      }
    }
 
    return cRemoved;
@@ -1076,10 +1068,10 @@ void StatisticsPool::InsertProbe (
    FN_STATS_ENTRY_DELETE  fndel) // Destructor
 {
    pubitem item = { unit, flags, fOwned, false, 0, probe, pattr, fnpub, fnunp };
-   pub.insert(name, item, true);
+   zpub[name] = item;
 
    poolitem pi = { unit, fOwned, fnadv, fnclr, fnsrm, fndel };
-   pool.insert(probe, pi, true);
+   pool[probe] = pi;
 }
 
 void StatisticsPool::InsertPublish (
@@ -1093,7 +1085,7 @@ void StatisticsPool::InsertPublish (
    FN_STATS_ENTRY_UNPUBLISH fnunp) // unpublish method
 {
    pubitem item = { unit, flags, fOwned, false, 0, probe, pattr, fnpub, fnunp };
-   pub.insert(name, item, true);
+   zpub[name] = item;
 }
 
 /* tj: IMPLEMENT THIS
@@ -1118,10 +1110,7 @@ int StatisticsPool::Advance(int cAdvance)
    if (cAdvance <= 0)
       return cAdvance;
 
-   void* pitem;
-   poolitem item;
-   pool.startIterations();
-   while (pool.iterate(pitem,item))
+   for (auto& [pitem, item] : pool)
       {
       if (pitem && item.Advance) {
          stats_entry_base * probe = (stats_entry_base *)pitem;
@@ -1133,10 +1122,7 @@ int StatisticsPool::Advance(int cAdvance)
 
 void StatisticsPool::Clear()
 {
-   void* pitem;
-   poolitem item;
-   pool.startIterations();
-   while (pool.iterate(pitem,item))
+   for (auto& [pitem, item] : pool)
       {
       if (pitem && item.Clear) {
          stats_entry_base * probe = (stats_entry_base *)pitem;
@@ -1154,10 +1140,7 @@ void StatisticsPool::SetRecentMax(int window, int quantum)
 {
    int cRecent = (quantum > 0) ? (window / quantum) : window;
 
-   void* pitem;
-   poolitem item;
-   pool.startIterations();
-   while (pool.iterate(pitem,item))
+   for (auto& [pitem, item] : pool)
       {
       if (pitem && item.SetRecentMax) {
          stats_entry_base * probe = (stats_entry_base *)pitem;
@@ -1187,17 +1170,13 @@ int StatisticsPool::SetVerbosities(const char * attrs_list, int pub_flags, bool 
  */
 int StatisticsPool::SetVerbosities(classad::References & attrs, int pub_flags, bool restore_nonmatching /*= false*/)
 {
-   pubitem * pitem;
-   const MyString * name;
    ClassAd tmp;
 
-   pub.startIterations();
-   while (pub.iterate_nocopy(&name, &pitem)) {
-      pubitem & item = *pitem;
+   for (auto& [name, item] : zpub) {
       if ( ! item.Publish) continue;
 
       // if the base attribute name matches, the it's a match
-      const char * pattr = item.pattr ? item.pattr : name->c_str();
+      const char * pattr = item.pattr ? item.pattr : name.c_str();
       bool attr_match = attrs.find(pattr) != attrs.end();
 
       // if this is a multi-attribute probe we have to check against actual
@@ -1235,14 +1214,7 @@ int StatisticsPool::SetVerbosities(classad::References & attrs, int pub_flags, b
 
 void StatisticsPool::Publish(ClassAd & ad, int flags) const
 {
-   pubitem item;
-   MyString name;
-
-   // boo! HashTable doesn't support const, so I have to remove const from this
-   // to make the compiler happy.
-   StatisticsPool * pthis = const_cast<StatisticsPool*>(this);
-   pthis->pub.startIterations();
-   while (pthis->pub.iterate(name,item)) 
+   for (auto [name, item] : zpub)
       {
       // check various publishing flags to decide whether to call the Publish method
       if (!(flags & IF_DEBUGPUB) && (item.flags & IF_DEBUGPUB)) continue;
@@ -1262,14 +1234,7 @@ void StatisticsPool::Publish(ClassAd & ad, int flags) const
 
 void StatisticsPool::Publish(ClassAd & ad, const char * prefix, int flags) const
 {
-   pubitem item;
-   MyString name;
-
-   // boo! HashTable doesn't support const, so I have to remove const from this
-   // to make the compiler happy.
-   StatisticsPool * pthis = const_cast<StatisticsPool*>(this);
-   pthis->pub.startIterations();
-   while (pthis->pub.iterate(name,item)) 
+   for (auto& [name, item] : zpub)
       {
       // check various publishing flags to decide whether to call the Publish method
       if (!(flags & IF_DEBUGPUB) && (item.flags & IF_DEBUGPUB)) continue;
@@ -1282,7 +1247,7 @@ void StatisticsPool::Publish(ClassAd & ad, const char * prefix, int flags) const
 
       if (item.Publish) {
          stats_entry_base * probe = (stats_entry_base *)item.pitem;
-         MyString attr(prefix);
+         std::string attr(prefix);
          attr += (item.pattr ? item.pattr : name.c_str());
          (probe->*(item.Publish))(ad, attr.c_str(), item_flags);
          }
@@ -1291,14 +1256,7 @@ void StatisticsPool::Publish(ClassAd & ad, const char * prefix, int flags) const
 
 void StatisticsPool::Unpublish(ClassAd & ad) const
 {
-   pubitem item;
-   MyString name;
-
-   // boo! HashTable doesn't support const, so I have to remove const from this
-   // to make the compiler happy.
-   StatisticsPool * pthis = const_cast<StatisticsPool*>(this);
-   pthis->pub.startIterations();
-   while (pthis->pub.iterate(name,item)) 
+   for (auto& [name, item] : zpub)
       {
       const char * pattr = item.pattr ? item.pattr : name.c_str();
       if (item.Unpublish) 
@@ -1313,16 +1271,9 @@ void StatisticsPool::Unpublish(ClassAd & ad) const
 
 void StatisticsPool::Unpublish(ClassAd & ad, const char * prefix) const
 {
-   pubitem item;
-   MyString name;
-
-   // boo! HashTable doesn't support const, so I have to remove const from this
-   // to make the compiler happy.
-   StatisticsPool * pthis = const_cast<StatisticsPool*>(this);
-   pthis->pub.startIterations();
-   while (pthis->pub.iterate(name,item)) 
+   for (auto& [name, item] : zpub)
       {
-      MyString attr(prefix);
+      std::string attr(prefix);
       attr += (item.pattr ? item.pattr : name.c_str());
       if (item.Unpublish) 
          {

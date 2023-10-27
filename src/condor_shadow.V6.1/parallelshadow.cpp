@@ -174,7 +174,7 @@ ParallelShadow::spawn( void )
 
 
 void
-ParallelShadow::getResources( void )
+ParallelShadow::getResources( int /* timerID */ )
 {
     dprintf ( D_FULLDEBUG, "Getting machines from schedd now...\n" );
 
@@ -583,14 +583,22 @@ ParallelShadow::handleJobRemoval( int sig ) {
 
 	ResourceState s;
 
+	bool allPre = true;
+
     for ( size_t i=0 ; i<ResourceList.size() ; i++ ) {
 		s = ResourceList[i]->getResourceState();
+		if (s != RR_PRE) {
+			allPre = false;
+		}
 		if( s == RR_EXECUTING || s == RR_STARTUP ) {
 			ResourceList[i]->setExitReason( JOB_KILLED );
 			ResourceList[i]->killStarter();
 		}
     }
 
+	if (allPre) {
+		BaseShadow::shutDown(JOB_SHOULD_REMOVE);
+	}
 	return 0;
 }
 
@@ -972,7 +980,7 @@ void
 ParallelShadow::logDisconnectedEvent( const char* reason )
 {
 	JobDisconnectedEvent event;
-	event.setDisconnectReason( reason );
+	event.disconnect_reason = reason;
 
 /*
 	DCStartd* dc_startd = remRes->getDCStartd();
@@ -1021,7 +1029,7 @@ ParallelShadow::logReconnectFailedEvent( const char* reason )
 {
 	JobReconnectFailedEvent event;
 
-	event.setReason( reason );
+	event.reason = reason;
 
 /*
 	DCStartd* dc_startd = remRes->getDCStartd();

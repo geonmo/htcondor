@@ -23,7 +23,6 @@
 #include <pthread.h>
 #include "condor_common.h"
 #include "gahp_common.h"
-#include "simplelist.h"
 #include "PipeBuffer.h"
 
 #define GAHP_COMMAND_ASYNC_MODE_ON "ASYNC_MODE_ON"
@@ -67,7 +66,7 @@ class Worker {
 
 	pthread_cond_t m_cond;
 
-	SimpleList<Request*> m_request_list;
+	std::vector<Request*> m_request_list;
 };
 
 #define MIN_NUMBER_WORKERS 2
@@ -85,7 +84,6 @@ class IOProcess {
 
 	Worker* createNewWorker(void);
 	Worker* findFreeWorker(void);
-	Worker* findWorker(int id);
 	bool removeWorkerFromWorkerList(int id);
 
 	Request* addNewRequest(const char* cmd);
@@ -116,9 +114,9 @@ class IOProcess {
 
 	StringList m_result_list; // The list of results ready to be output to IO
 
-	HashTable<int, Worker*> m_workers_list;
+	std::map<int, Worker> m_workers_list;
 
-	SimpleList<Request*> m_pending_req_list;
+	std::vector<Request*> m_pending_req_list;
 };
 
 #endif /* IO_LOOP_H */

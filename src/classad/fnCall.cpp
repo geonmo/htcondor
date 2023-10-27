@@ -44,7 +44,11 @@
 #include <dlfcn.h>
 #endif
 
-using namespace std;
+using std::string;
+using std::vector;
+using std::pair;
+using std::set;
+
 
 namespace classad {
 
@@ -912,6 +916,9 @@ sumAvg(const char *name, const ArgumentList &argList,
 			if (!listElement->Evaluate(state, listElementValue)) {
 				val.SetErrorValue();
 				return false;
+			} else if (listElementValue.IsUndefinedValue()) {
+				--len;
+				continue;
 			} else if (!listElementValue.IsNumber()) {
 				val.SetErrorValue();
 				return true;
@@ -999,6 +1006,8 @@ minMax(const char *fn, const ArgumentList &argList,
 			if(!listElement->Evaluate(state, listElementValue)) {
 				val.SetErrorValue();
 				return false;
+			} else if (listElementValue.IsUndefinedValue()) {
+				continue;
 			} else if (!listElementValue.IsNumber()) {
 				val.SetErrorValue();
 				return true;
@@ -1098,9 +1107,6 @@ listCompare(
 	if (!argList[2]->Evaluate(state, compareVal)) {
 		val.SetErrorValue();
 		return false;
-	} else if (listVal.IsUndefinedValue()) {
-		val.SetUndefinedValue();
-		return true;
 	}
 
 	// Finally, we decide what to do exactly, based on our name.
@@ -1425,7 +1431,7 @@ splitTime(const char*, const ArgumentList &argList, EvalState &state,
 	Value &result )
 {
 	Value 	arg;
-    ClassAd *split;
+	ClassAd *split = nullptr;
 
 	if( argList.size( ) != 1 ) {
 		result.SetErrorValue( );
@@ -1437,12 +1443,15 @@ splitTime(const char*, const ArgumentList &argList, EvalState &state,
 		return false;	
 	}
 
-    if (!arg.IsClassAdValue() && doSplitTime(arg, split)) {
-        result.SetClassAdValue(split);
-    } else {
-        result.SetErrorValue();
-    }
-    return true;
+	if (arg.IsUndefinedValue()) {
+		result.SetUndefinedValue();
+	} else if (!arg.IsClassAdValue() && doSplitTime(arg, split)) {
+		state.AddToDeletionCache(split);
+		result.SetClassAdValue(split);
+	} else {
+		result.SetErrorValue();
+	}
+	return true;
 }
 
 bool FunctionCall::
@@ -1596,7 +1605,7 @@ strCat( const char* name, const ArgumentList &argListIn, EvalState &state,
 {
 	ClassAdUnParser	unp;
 	string			buf, s, sep;
-	bool			errorFlag=false, undefFlag=false, rval=true;
+	bool			errorFlag=false, undefFlag=false, defFlag=false, rval=true;
 	bool			is_join = (0 == strcasecmp( name, "join" ));
 	int				num_args = (int)argListIn.size();
 	ArgumentList	argTemp; // in case we need it
@@ -1608,7 +1617,14 @@ strCat( const char* name, const ArgumentList &argListIn, EvalState &state,
 	// join has a special case for 1 or 2 args when the last argument is a list.
 	// for 1 arg, join the list items, for 2 args, join arg1 with arg0 as the separator
 	if (is_join && num_args > 0 && num_args <= 2) {
+		if( state.depth_remaining <= 0 ) {
+			result.SetErrorValue();
+			return false;
+		}
+		state.depth_remaining--;
+
 		rval = argListIn[num_args-1]->Evaluate(state, listVal);
+		state.depth_remaining++;
 		if (rval) {
 			ExprList *listToJoin;
 			if (listVal.IsListValue(listToJoin)) {
@@ -1634,15 +1650,25 @@ strCat( const char* name, const ArgumentList &argListIn, EvalState &state,
 		Value  stringVal;
 
 		s = "";
+
+		if( state.depth_remaining <= 0 ) {
+			result.SetErrorValue();
+			return false;
+		}
+		state.depth_remaining--;
+
 		if( !( rval = (*args)[i]->Evaluate( state, val ) ) ) {
 			break;
 		}
+		state.depth_remaining++;
 
 		if (!val.IsStringValue(s)) {
 			convertValueToStringValue(val, stringVal);
 			if (stringVal.IsUndefinedValue()) {
 				undefFlag = true;
-				break;
+				if (is_join) { continue; }  // join keeps going
+				defFlag = false;
+				break; // strcat returns undefined
 			} else if (stringVal.IsErrorValue()) {
 				errorFlag = true;
 				result.SetErrorValue();
@@ -1658,10 +1684,11 @@ strCat( const char* name, const ArgumentList &argListIn, EvalState &state,
 				sep = s;
 				continue;
 			}
-			if (i > 1) {
+			if ( ! buf.empty()) {
 				buf += sep;
 			}
 		}
+		defFlag = true;
 		buf += s;
 	}
 
@@ -1679,8 +1706,8 @@ strCat( const char* name, const ArgumentList &argListIn, EvalState &state,
 		result.SetErrorValue( );
 		return( true );
 	} 
-	// some argument was undefined
-	if( undefFlag ) {
+	// some argument was undefined and no arguments were defined
+	if( undefFlag && ! defFlag ) {
 		result.SetUndefinedValue( );
 		return( true );
 	}
@@ -2678,6 +2705,9 @@ eval( const char* /* name */,const ArgumentList &argList,EvalState &state,
 		return true;
 	}
 
+	// add the new tree to the evaluation cache for later deletion
+	state.AddToDeletionCache(expr);
+
 	state.depth_remaining--;
 
 	expr->SetParentScope( state.curAd );
@@ -2685,8 +2715,6 @@ eval( const char* /* name */,const ArgumentList &argList,EvalState &state,
 	bool eval_ok = expr->Evaluate( state, result );
 
 	state.depth_remaining++;
-
-	delete expr;
 
 	if( !eval_ok ) {
 		result.SetErrorValue();
@@ -2731,13 +2759,13 @@ interval( const char* /* name */,const ArgumentList &argList,EvalState &state,
 
 	char strval[25];
 	if ( days != 0 ) {
-		sprintf(strval,"%d+%02d:%02d:%02d", days, abs(hours), abs(min), abs(secs) );
+		snprintf(strval, sizeof(strval), "%d+%02d:%02d:%02d", days, abs(hours), abs(min), abs(secs) );
 	} else if ( hours != 0 ) {
-		sprintf(strval,"%d:%02d:%02d", hours, abs(min), abs(secs) );
+		snprintf(strval, sizeof(strval), "%d:%02d:%02d", hours, abs(min), abs(secs) );
 	} else if ( min != 0 ) {
-		sprintf(strval,"%d:%02d", min, abs(secs) );
+		snprintf(strval, sizeof(strval), "%d:%02d", min, abs(secs) );
 	} else {
-		sprintf(strval,"%d", secs );
+		snprintf(strval, sizeof(strval), "%d", secs );
 	}
 	result.SetStringValue(strval);
 
@@ -3045,7 +3073,6 @@ static bool regexp_helper(
 	int error_code;
 	pcre2_code * re = NULL;
 	PCRE2_SPTR pattern_pcre2 = reinterpret_cast<const unsigned char *>(pattern);
-	uint32_t group_count = 0;
 	PCRE2_SIZE *ovector = NULL;
 	bool empty_match = false;
 	uint32_t addl_opts = 0;

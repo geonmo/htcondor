@@ -31,8 +31,6 @@
 #include "condor_adtypes.h"
 #include "condor_uid.h"
 #include "daemon.h"
-#include "extArray.h"
-#include "HashTable.h"
 #include "basename.h"
 #include "condor_distribution.h"
 #include "subsystem_info.h"
@@ -43,8 +41,12 @@
 
 double priority = 0.00001;
 const char *pool = NULL;
-struct 	PrioEntry { std::string name; float prio; };
-static  ExtArray<PrioEntry> prioTable;
+struct 	PrioEntry { 
+	PrioEntry(const std::string &name, float prio) : name(name), prio(prio) {}
+	std::string name; 
+	float prio;
+};
+static  std::vector<PrioEntry> prioTable;
 #ifndef WIN32
 #endif
 ExprTree *rankCondStd;// no preemption or machine rank-preemption 
@@ -132,7 +134,7 @@ giveBestMachine(ClassAd &request,ClassAdList &startdAds,
 			candidate->LookupString (ATTR_REMOTE_USER, remoteUser, sizeof(remoteUser))) 
 		{
 				// check if we are preempting for rank or priority
-			if( EvalExprTree( rankCondStd, candidate, &request, result ) &&
+			if( EvalExprToBool( rankCondStd, candidate, &request, result ) &&
 				result.IsBooleanValue( val ) && val ) {
 					// offer strictly prefers this request to the one
 					// currently being serviced; preempt for rank
@@ -145,14 +147,14 @@ giveBestMachine(ClassAd &request,ClassAdList &startdAds,
 					// (1) we need to make sure that PreemptionReq's hold (i.e.,
 					// if the PreemptionReq expression isn't true, dont preempt)
 				if (PreemptionReq && 
-					!(EvalExprTree(PreemptionReq,candidate,&request,result) &&
+					!(EvalExprToBool(PreemptionReq,candidate,&request,result) &&
 					  result.IsBooleanValue(val) && val) ) {
 					continue;
 				}
 					// (2) we need to make sure that the machine ranks the job
 					// at least as well as the one it is currently running 
 					// (i.e., rankCondPrioPreempt holds)
-				if(!(EvalExprTree(rankCondPrioPreempt,candidate,&request,result)&&
+				if(!(EvalExprToBool(rankCondPrioPreempt,candidate,&request,result)&&
 					 result.IsBooleanValue(val) && val ) ) {
 						// machine doesn't like this job as much -- find another
 					continue;
@@ -187,7 +189,7 @@ giveBestMachine(ClassAd &request,ClassAdList &startdAds,
 			// calculate the preemption rank
 			double rval;
 			if( PreemptionRank &&
-				EvalExprTree(PreemptionRank,candidate,&request,result) &&
+				EvalExprToNumber(PreemptionRank,candidate,&request,result) &&
 				result.IsNumber(rval)) {
 
 				candidatePreemptRankValue = rval;
@@ -246,7 +248,7 @@ void
 make_request_ad(ClassAd & requestAd, const char *rank)
 {
 	SetMyTypeName (requestAd, JOB_ADTYPE);
-	SetTargetTypeName (requestAd, STARTD_ADTYPE);
+	requestAd.Assign(ATTR_TARGET_TYPE, STARTD_OLD_ADTYPE); // For pre 23.0 
 
 	get_mySubSystem()->setTempName( "SUBMIT" );
 	config_fill_ad( &requestAd );
@@ -350,16 +352,14 @@ fetchSubmittorPrios()
 
 	i = 1;
 	while( i ) {
-    	sprintf( attrName , "Name%d", i );
-    	sprintf( attrPrio , "Priority%d", i );
+		snprintf( attrName, sizeof(attrName), "Name%d", i );
+		snprintf( attrPrio, sizeof(attrPrio), "Priority%d", i );
 
     	if( !al.LookupString( attrName, name, sizeof(name) ) || 
 			!al.LookupFloat( attrPrio, sub_priority ) )
             break;
 
-		prioTable[i-1].name = name;
-		prioTable[i-1].prio = sub_priority;
-		// printf("DEBUG: Prio   %s %f\n",name,sub_priority);
+		prioTable.emplace_back(name, sub_priority);
 		i++;
 	}
 
@@ -372,15 +372,14 @@ static int
 findSubmittor( char *name ) 
 {
 	std::string sub(name);
-	int			last = prioTable.getlast();
+	int			last = prioTable.size();
 	int			i;
 	
-	for( i = 0 ; i <= last ; i++ ) {
+	for( i = 0 ; i < last ; i++ ) {
 		if( prioTable[i].name == sub ) return i;
 	}
 
-	prioTable[i].name = sub;
-	prioTable[i].prio = 0.5;
+	prioTable.emplace_back(sub, 0.5);
 
 	return i;
 }
@@ -415,9 +414,8 @@ main(int argc, char *argv[])
 	int i;
 	int iExitUsageCode=1;
 	char buffer[1024];
-	HashTable<std::string, int>	*slot_counts;
+	std::map<std::string, int> slot_counts;
 
-	slot_counts = new HashTable <std::string, int> (hashFunction);
 	set_priv_initialize(); // allow uid switching if root
 	config();
 
@@ -477,9 +475,9 @@ main(int argc, char *argv[])
 	}
 
 	// initialize some global expressions
-	sprintf (buffer, "MY.%s > MY.%s", ATTR_RANK, ATTR_CURRENT_RANK);
+	snprintf (buffer, sizeof(buffer), "MY.%s > MY.%s", ATTR_RANK, ATTR_CURRENT_RANK);
 	ParseClassAdRvalExpr (buffer, rankCondStd);
-	sprintf (buffer, "MY.%s >= MY.%s", ATTR_RANK, ATTR_CURRENT_RANK);
+	snprintf (buffer, sizeof(buffer), "MY.%s >= MY.%s", ATTR_RANK, ATTR_CURRENT_RANK);
 	ParseClassAdRvalExpr (buffer, rankCondPrioPreempt);
 
 	// get PreemptionReq expression from config file
@@ -552,30 +550,20 @@ main(int argc, char *argv[])
 		if(WantMachineNames) {
 			if (offer->LookupString (ATTR_MACHINE, remoteHost) ) {
 				int slot_count;
-				int slot_count_thus_far;
 
 				// How many slots are on that machine?
 				if (!offer->LookupInteger(ATTR_TOTAL_SLOTS, slot_count)) {
 					slot_count = 1;
 				}
 
-				slot_count_thus_far = 0;
-				// Keep track of what we've seen in a hashtable
-				if(!slot_counts->lookup(remoteHost, slot_count_thus_far)) {
-					//printf("DEBUG: Already seen a %s %d times\n",
-					//		 remoteHost.c_str(), slot_count_thus_far);
-					slot_counts->remove(remoteHost);
-				}			
-
 				// If we don't have enough slots to complete the set,
-				// stick it in the hash table, remove it from the list
+				// stick it in the map, remove it from the list
 				// of startd ads, and keep looking.
 				// FIXME(?) This would probably blow up with bogus ads 
 				// (ie duplicate ads, but I dunno if those can happen)
-				if(++slot_count_thus_far < slot_count) {
+				if(++slot_counts[remoteHost] < slot_count) {
 					//printf("DEBUG: Adding %s with %d\n", remoteHost.c_str(),
-					//		slot_count_thus_far);
-					slot_counts->insert(remoteHost, slot_count_thus_far);
+					//		slot_counts[remoteHost]);
 					startdAds.Delete(offer);
 					i--;
 					continue;
@@ -590,7 +578,7 @@ main(int argc, char *argv[])
 		else
 			offer->LookupString(ATTR_NAME, remoteHost);
 
-		if ( remoteHost[0] ) {
+		if (!remoteHost.empty()) {
 			printf("%s\n", remoteHost.c_str());
 		}
 

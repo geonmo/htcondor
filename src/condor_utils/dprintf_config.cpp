@@ -42,6 +42,7 @@ extern bool		log_keep_open;
 extern char*	DebugTimeFormat;
 extern int		DebugLockIsMutex;
 extern char*	DebugLogDir;
+extern bool 	should_block_signals;
 
 extern void		_condor_set_debug_flags( const char *strflags, int cat_and_flags );
 
@@ -308,7 +309,7 @@ dprintf_config( const char *subsys, struct dprintf_output_settings *p_info /* = 
 	/*
 	**  Then, add flags set by the subsys_DEBUG parameters
 	*/
-	(void)sprintf(pname, "%s_DEBUG", subsys);
+	(void)snprintf(pname, sizeof(pname), "%s_DEBUG", subsys);
 	pval = param(pname);//dprintf_param_funcs->param(pname);
 	if ( ! pval) {
 		pval = param("DEFAULT_DEBUG");//dprintf_param_funcs->param("DEFAULT_DEBUG");
@@ -336,7 +337,7 @@ dprintf_config( const char *subsys, struct dprintf_output_settings *p_info /* = 
 	DebugLockIsMutex = FALSE;
 #endif
 
-	(void)sprintf(pname, "%s_LOCK", subsys);
+	(void)snprintf(pname, sizeof(pname), "%s_LOCK", subsys);
 	if (DebugLock) {
 		free(DebugLock);
 	}
@@ -350,10 +351,11 @@ dprintf_config( const char *subsys, struct dprintf_output_settings *p_info /* = 
 #endif
 
 	if(!DebugLock) {
-		(void)sprintf(pname, "%s_LOG_KEEP_OPEN", subsys);
+		(void)snprintf(pname, sizeof(pname), "%s_LOG_KEEP_OPEN", subsys);
 		log_keep_open = param_boolean(pname, log_open_default);//dprintf_param_funcs->param_boolean(pname, log_open_default);
 	}
 
+	should_block_signals = param_boolean("DPRINTF_BLOCK_SIGNALS", true);
 	/*
 	If LOGS_USE_TIMESTAMP is enabled, we will print out Unix timestamps
 	instead of the standard date format in all the log messages
@@ -402,7 +404,7 @@ dprintf_config( const char *subsys, struct dprintf_output_settings *p_info /* = 
 			param_index = (int)DebugParams.size();
 		}
 
-		(void)sprintf(pname, "%s_LOG", subsys_and_level.c_str());
+		(void)snprintf(pname, sizeof(pname), "%s_LOG", subsys_and_level.c_str());
 
 		char *logPathParam = NULL;
 		if(debug_level == D_ALWAYS)
@@ -504,19 +506,19 @@ dprintf_config( const char *subsys, struct dprintf_output_settings *p_info /* = 
 			logPathParam = NULL;
 		}
 
-		(void)sprintf(pname, "TRUNC_%s_LOG_ON_OPEN", subsys_and_level.c_str());
+		(void)snprintf(pname, sizeof(pname), "TRUNC_%s_LOG_ON_OPEN", subsys_and_level.c_str());
 		DebugParams[param_index].want_truncate = param_boolean(pname, DebugParams[param_index].want_truncate) ? 1 : 0;//dprintf_param_funcs->param_boolean(pname, DebugParams[param_index].want_truncate) ? 1 : 0;
 
 		//PRAGMA_REMIND("TJ: move initialization of DebugLock")
 		if (debug_level == D_ALWAYS) {
-			(void)sprintf(pname, "%s_LOCK", subsys);
+			(void)snprintf(pname, sizeof(pname), "%s_LOCK", subsys);
 			if (DebugLock) {
 				free(DebugLock);
 			}
 			DebugLock = param(pname);
 		}
 
-		(void)sprintf(pname, "MAX_%s_LOG", subsys_and_level.c_str());
+		(void)snprintf(pname, sizeof(pname), "MAX_%s_LOG", subsys_and_level.c_str());
 		pval = param(pname);
 		if (pval != NULL) {
 			long long maxlog = 0;
@@ -532,7 +534,7 @@ dprintf_config( const char *subsys, struct dprintf_output_settings *p_info /* = 
 			free(pval);
 		}
 
-		(void)sprintf(pname, "MAX_NUM_%s_LOG", subsys_and_level.c_str());
+		(void)snprintf(pname, sizeof(pname), "MAX_NUM_%s_LOG", subsys_and_level.c_str());
 		pval = param(pname);
 		if (pval != NULL) {
 			DebugParams[param_index].maxLogNum = param_integer(pname, 1, 0);

@@ -88,7 +88,7 @@ int RemoteProc::StartJob()
 		& fi, NULL, childFDs );
 
 	if( pid == 0 ) {
-		dprintf( D_ALWAYS | D_FAILURE, "Failed to launch remote worker\n" );
+		dprintf( D_ERROR, "Failed to launch remote worker\n" );
 		return FALSE;
 	}
 	JobPid = pid;
@@ -128,7 +128,7 @@ bool RemoteProc::JobReaper( int pid, int status )
 					int r = read(fd, buf, 511);
 					if (r < 0) {
 						dprintf(D_ALWAYS, "Cannot read worker output file on job submission. Errno %d\n", errno);
-						sprintf(buf, "Cannot read worker output file on job submission. Errno %d\n", errno);
+						snprintf(buf, sizeof(buf), "Cannot read worker output file on job submission. Errno %d\n", errno);
 					} else {
 						buf[r] = '\0';
 						int buflen = strlen(buf);
@@ -292,7 +292,7 @@ bool RemoteProc::ShutdownFast() {
 
 
 void
-RemoteProc::getStats() {
+RemoteProc::getStats( int /* timerID */ ) {
 	// TODO read .status.ad file and update in-memory data
 }
 

@@ -21,8 +21,12 @@
 #include "classad/operators.h"
 #include "classad/sink.h"
 #include "classad/util.h"
+#include <limits>
 
-using namespace std;
+using std::string;
+using std::vector;
+using std::pair;
+
 
 #include <algorithm>
 namespace classad {
@@ -1144,18 +1148,29 @@ doArithmetic (OpKind op, Value &v1, Value &v2, Value &result)
 					return( SIG_CHLD1 | SIG_CHLD2 );
 
 				case DIVISION_OP:		
-					if (i2 != 0) {
-						result.SetIntegerValue(i1/i2);
+					// Don't throw SIGFPE for LONG_MIN / -1
+					if ((i1 == std::numeric_limits<int64_t>::min()) && (i2 == -1)) { 
+							// Off by one, but what else could you do?
+							result.SetIntegerValue(std::numeric_limits<int64_t>::max());
 					} else {
-						result.SetErrorValue ();
+						if (i2 != 0) {
+							result.SetIntegerValue(i1/i2);
+						} else {
+							result.SetErrorValue ();
+						}
 					}
 					return( SIG_CHLD1 | SIG_CHLD2 );
 					
 				case MODULUS_OP:
-					if (i2 != 0) {
-						result.SetIntegerValue(i1%i2);
+					// Don't throw SIGFPE for LONG_MIN % -1
+					if ((i1 == std::numeric_limits<int64_t>::min()) && (i2 == -1)) { 
+							result.SetIntegerValue(0);
 					} else {
-						result.SetErrorValue ();
+						if (i2 != 0) {
+							result.SetIntegerValue(i1%i2);
+						} else {
+							result.SetErrorValue ();
+						}
 					}
 					return( SIG_CHLD1 | SIG_CHLD2 );
 							
@@ -1184,7 +1199,8 @@ doArithmetic (OpKind op, Value &v1, Value &v2, Value &result)
 int Operation::
 doLogical (OpKind op, Value &v1, Value &v2, Value &result)
 {
-	bool		b1, b2;
+	bool		b1 = false;
+	bool		b2 = false;;
 
 		// first coerece inputs to boolean if they are considered equivalent
 	if( !v1.IsBooleanValue( b1 ) && v1.IsBooleanValueEquiv( b1 ) ) {
@@ -1999,8 +2015,8 @@ flatten( EvalState &state, Value &val, ExprTree *&tree ) const
 		}
 	} else {
 		// Flatten arms of the if expression
-		if( child2 && !child2->Flatten( state, eval2, fChild2 ) ||
-			!child3->Flatten( state, eval3, fChild3 ) ) {
+		if ((child2 && !child2->Flatten( state, eval2, fChild2)) ||
+			!child3->Flatten( state, eval3, fChild3)) {
 			// clean up
 			if( fChild1 ) delete fChild1;
 			if( fChild2 ) delete fChild2;

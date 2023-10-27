@@ -21,7 +21,6 @@
 #define COMPAT_CLASSAD_UTIL_H
 
 #include "compat_classad.h"
-#include "MyString.h"
 
 // parse str into attr=expression, returning the attr and the expression and true on success
 bool ParseLongFormAttrValue(const char*str, std::string &attr, classad::ExprTree*& tree);
@@ -40,6 +39,7 @@ bool ExprTreeIsLiteralString(classad::ExprTree * expr, std::string & sval);
 bool ExprTreeIsLiteralString(classad::ExprTree * expr, const char* & cstr);
 bool ExprTreeIsLiteralBool(classad::ExprTree * expr, bool & bval);
 bool ExprTreeIsAttrRef(classad::ExprTree * expr, std::string & attr, bool * is_absolute=NULL);
+bool ExprTreeMayDollarDollarExpand(classad::ExprTree *tree, std::string & unparsed);
 
 // returns true when the expression is a comparision between an attribute ref and a literal
 // on exit:
@@ -86,21 +86,70 @@ classad::ExprTree * JoinExprTreeCopiesWithOp(classad::Operation::OpKind, classad
 // note: do NOT pass an envelope node to this function!! it's fine to pass the output of ParseClassAdRvalExpr
 classad::ExprTree * WrapExprTreeInParensForOp(classad::ExprTree * expr, classad::Operation::OpKind op);
 
-bool EvalExprBool(ClassAd *ad, const char *constraint);
-
 bool EvalExprBool(ClassAd *ad, classad::ExprTree *tree);
 
 bool ClassAdsAreSame( ClassAd *ad1, ClassAd * ad2, StringList * ignored_attrs=NULL, bool verbose=false );
 
-int EvalExprTree( classad::ExprTree *expr, ClassAd *source,
+void CopyMachineResources(ClassAd &destAd, const ClassAd & srcAd, bool include_res_list);
+
+void CopySelectAttrs(ClassAd &destAd, const ClassAd &srcAd, const std::string &attrs, bool overwrite=true);
+
+// returns TRUE if the expression evaluates successfully and the result was a pod type
+// or one of the complex types in the type mask.  If a mask of 0 matches all types.
+// returns FALSE if the expression could not be evaluated or if the value was unsafe and not in the type mask
+// note that ERROR can be a valid result of evaluation if the type_mask allows for it. a failure to
+// evaluate is more fundamental than evaluation to error.
+// NOTE: this function will NOT return false for successful evaluation to a type not in the mask
+// it only returns false for successful evalatation when the type was unsafe and was therefore destroyed
+// This is done so that callers can print useful diagnostics.
+bool EvalExprTree( classad::ExprTree *expr, ClassAd *source,
 				  ClassAd *target, classad::Value &result,
+				  classad::Value::ValueType type_mask,
 				  const std::string & sourceAlias = "",
 				  const std::string & targetAlias = "" );
 
+// useful for evaluating to a number or to a bool
+inline int EvalExprToNumber( classad::ExprTree *expr, ClassAd *source,
+	ClassAd *target, classad::Value &result,
+	const std::string & sourceAlias = "",
+	const std::string & targetAlias = "") {
+	return EvalExprTree(expr, source, target, result, classad::Value::ValueType::NUMBER_VALUES, sourceAlias, targetAlias);
+}
+
+inline int EvalExprToBool( classad::ExprTree *expr, ClassAd *source,
+	ClassAd *target, classad::Value &result,
+	const std::string & sourceAlias = "",
+	const std::string & targetAlias = "") {
+	return EvalExprTree(expr, source, target, result, classad::Value::ValueType::NUMBER_VALUES, sourceAlias, targetAlias);
+}
+
+// use this when only a string value is useful
+inline int EvalExprToString( classad::ExprTree *expr, ClassAd *source,
+	ClassAd *target, classad::Value &result,
+	const std::string & sourceAlias = "",
+	const std::string & targetAlias = "") {
+	return EvalExprTree(expr, source, target, result, classad::Value::ValueType::STRING_VALUE, sourceAlias, targetAlias);
+}
+
+// returns any single-valued literal including undefined and error, but not a classad or a list
+inline int EvalExprToScalar( classad::ExprTree *expr, ClassAd *source,
+	ClassAd *target, classad::Value &result,
+	const std::string & sourceAlias = "",
+	const std::string & targetAlias = "") {
+	return EvalExprTree(expr, source, target, result, classad::Value::ValueType::SCALAR_EX_VALUES, sourceAlias, targetAlias);
+}
+
 //ad2 treated as candidate to match against ad1, so we want to find a match for ad1
+// This does reciprocal Requirements matching, but as of 23.0 (and 10.0.9) it no longer checks TargetType
 bool IsAMatch( ClassAd *ad1, ClassAd *ad2 );
 
-bool IsAHalfMatch( ClassAd *my, ClassAd *target );
+// evaluate My.Requirements in the context of a target ad
+// also check that the MyType of the target ad matches the given targetType.  The collector uses this
+bool IsATargetMatch( ClassAd *my, ClassAd *target, const char * targetType );
+
+// evaluates the query REQUIREMENTS against the target ad
+// but does *NOT* care about TargetType
+bool IsAConstraintMatch( ClassAd *query, ClassAd *target );
 
 bool ParallelIsAMatch(ClassAd *ad1, std::vector<ClassAd*> &candidates, std::vector<ClassAd*> &matches, int threads, bool halfMatch = false);
 
@@ -112,7 +161,7 @@ int add_user_map(const char * mapname, const char * filename, MapFile * mf /*=NU
 int add_user_mapping(const char * mapname, char * mapdata);
 // these functions are in classad_usermap.cpp (and also libcondorapi_stubs.cpp)
 int reconfig_user_maps();
-bool user_map_do_mapping(const char * mapname, const char * input, MyString & output);
+bool user_map_do_mapping(const char * mapname, const char * input, std::string & output);
 
 // a class to hold (and delete) a constraint ExprTree
 // it can be initialized with either a string for a tree

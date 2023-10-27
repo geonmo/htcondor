@@ -36,8 +36,6 @@
 
 #include <algorithm>
 
-using namespace std;
-
 #define GM_INIT							0
 #define GM_START_VM						1
 #define GM_SAVE_INSTANCE_ID				2
@@ -127,7 +125,7 @@ void EC2JobReconfig()
 bool EC2JobAdMatch( const ClassAd *job_ad )
 {
 	int universe;
-	string resource;
+	std::string resource;
 
 	job_ad->LookupInteger( ATTR_JOB_UNIVERSE, universe );
 	job_ad->LookupString( ATTR_GRID_RESOURCE, resource );
@@ -164,13 +162,13 @@ EC2Job::EC2Job( ClassAd *classad ) :
 	purgedTwice( false ),
 	updatedOnce( false )
 {
-	string error_string = "";
+	std::string error_string = "";
 	char *gahp_path = NULL;
 	char *gahp_log = NULL;
 	int gahp_worker_cnt = 0;
 	char *gahp_debug = NULL;
 	ArgList args;
-	string value;
+	std::string value;
 
 	remoteJobState = "";
 	gmState = GM_INIT;
@@ -359,11 +357,11 @@ EC2Job::EC2Job( ClassAd *classad ) :
 
 	args.AppendArg("-w");
 	gahp_worker_cnt = param_integer( "EC2_GAHP_WORKER_MIN_NUM", 1 );
-	args.AppendArg(gahp_worker_cnt);
+	args.AppendArg(std::to_string(gahp_worker_cnt));
 
 	args.AppendArg("-m");
 	gahp_worker_cnt = param_integer( "EC2_GAHP_WORKER_MAX_NUM", 5 );
-	args.AppendArg(gahp_worker_cnt);
+	args.AppendArg(std::to_string(gahp_worker_cnt));
 
 	args.AppendArg("-d");
 	gahp_debug = param( "EC2_GAHP_DEBUG" );
@@ -468,10 +466,10 @@ EC2Job::~EC2Job()
 	if ( myResource ) {
 		myResource->UnregisterJob( this );
 		if( ! m_spot_request_id.empty() ) {
-			myResource->spotJobsByRequestID.remove( m_spot_request_id );
+			myResource->spotJobsByRequestID.erase(m_spot_request_id);
 		}
 		if( ! m_remoteJobId.empty() ) {
-			myResource->jobsByInstanceID.remove( m_remoteJobId );
+			myResource->jobsByInstanceID.erase(m_remoteJobId);
 		}
 	}
 
@@ -492,7 +490,7 @@ void EC2Job::Reconfig()
 }
 
 
-void EC2Job::doEvaluateState()
+void EC2Job::doEvaluateState( int /* timerID */ )
 {
 	int old_gm_state;
 	bool reevaluate_state = true;
@@ -1051,38 +1049,13 @@ void EC2Job::doEvaluateState()
 				// Remove all knowledge of any previous or present job
 				// submission, in both the gridmanager and the schedd.
 
-				// If we are doing a rematch, we are simply waiting around
-				// for the schedd to be updated and subsequently this globus job
-				// object to be destroyed.  So there is nothing to do.
-				if ( wantRematch ) {
-					break;
-				}
-
 				// For now, put problem jobs on hold instead of
 				// forgetting about current submission and trying again.
 				// TODO: Let our action here be dictated by the user preference
 				// expressed in the job ad.
-				if ( !m_remoteJobId.empty() && condorState != REMOVED
-					 && wantResubmit == false && doResubmit == 0 ) {
+				if (!m_remoteJobId.empty() && condorState != REMOVED) {
 					gmState = GM_HOLD;
 					break;
-				}
-
-				// Only allow a rematch *if* we are also going to perform a resubmit
-				if ( wantResubmit || doResubmit ) {
-					jobAd->LookupBool(ATTR_REMATCH_CHECK,wantRematch);
-				}
-
-				if ( wantResubmit ) {
-					wantResubmit = false;
-					dprintf(D_ALWAYS, "(%d.%d) Resubmitting to Globus because %s==TRUE\n",
-						procID.cluster, procID.proc, ATTR_GLOBUS_RESUBMIT_CHECK );
-				}
-
-				if ( doResubmit ) {
-					doResubmit = 0;
-					dprintf(D_ALWAYS, "(%d.%d) Resubmitting to Globus (last submit failed)\n",
-						procID.cluster, procID.proc );
 				}
 
 				errorString = "";
@@ -1112,24 +1085,6 @@ void EC2Job::doEvaluateState()
 				std::string type;
 				if ( jobAd->LookupString( ATTR_EC2_SERVER_TYPE, type ) ) {
 					jobAd->AssignExpr( ATTR_EC2_SERVER_TYPE, "Undefined" );
-				}
-
-				if ( wantRematch ) {
-					dprintf(D_ALWAYS, "(%d.%d) Requesting schedd to rematch job because %s==TRUE\n",
-						procID.cluster, procID.proc, ATTR_REMATCH_CHECK );
-
-					// Set ad attributes so the schedd finds a new match.
-					bool dummy;
-					if ( jobAd->LookupBool( ATTR_JOB_MATCHED, dummy ) != 0 ) {
-						jobAd->Assign( ATTR_JOB_MATCHED, false );
-						jobAd->Assign( ATTR_CURRENT_HOSTS, 0 );
-					}
-
-					// If we are rematching, we need to forget about this job
-					// cuz we wanna pull a fresh new job ad, with a fresh new match,
-					// from the all-singing schedd.
-					gmState = GM_DELETE;
-					break;
 				}
 
 				// If there are no updates to be done when we first enter this
@@ -2030,12 +1985,12 @@ void EC2Job::SetInstanceId( const char *instance_id )
 // Use SetClientToken() or SetInstanceId() instead.
 void EC2Job::EC2SetRemoteJobId( const char *client_token, const char *instance_id )
 {
-	string full_job_id;
+	std::string full_job_id;
 	if ( client_token && client_token[0] ) {
 		formatstr( full_job_id, "ec2 %s %s", m_serviceUrl.c_str(), client_token );
 		if ( instance_id && instance_id[0] ) {
 			// We need this to do bulk status queries.
-			myResource->jobsByInstanceID.insert( instance_id, this );
+			myResource->jobsByInstanceID[instance_id] = this;
 			formatstr_cat( full_job_id, " %s", instance_id );
 		}
 	}
@@ -2047,9 +2002,9 @@ void EC2Job::EC2SetRemoteJobId( const char *client_token, const char *instance_i
 
 // if ami_id is empty, client must have assigned upload file name value
 // otherwise the condor_submit will report an error.
-string EC2Job::build_ami_id()
+std::string EC2Job::build_ami_id()
 {
-	string ami_id;
+	std::string ami_id;
 	char* buffer = NULL;
 
 	if ( jobAd->LookupString( ATTR_EC2_AMI_ID, &buffer ) ) {
@@ -2061,7 +2016,7 @@ string EC2Job::build_ami_id()
 
 // Client token is max 64 ASCII chars
 // http://docs.amazonwebservices.com/AWSEC2/latest/UserGuide/Run_Instance_Idempotency.html
-string EC2Job::build_client_token()
+std::string EC2Job::build_client_token()
 {
 #ifdef WIN32
 	GUID guid;
@@ -2071,7 +2026,7 @@ string EC2Job::build_client_token()
 	StringFromGUID2(guid, wsz, COUNTOF(wsz));
 	char uuid_str[40];
 	WideCharToMultiByte(CP_ACP, 0, wsz, -1, uuid_str, COUNTOF(uuid_str), NULL, NULL);
-	return string(uuid_str);
+	return std::string(uuid_str);
 #else
 	char uuid_str[37];
 	uuid_t uuid;
@@ -2080,7 +2035,7 @@ string EC2Job::build_client_token()
 
 	uuid_unparse(uuid, uuid_str);
 	uuid_str[36] = '\0';
-	return string(uuid_str);
+	return std::string(uuid_str);
 #endif
 }
 
@@ -2116,7 +2071,7 @@ std::string EC2Job::build_keypair()
 
 	size_t loc = 0;
 	#define KEYPAIR_FILTER "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 -_"
-	while( (loc = key_pair.find_first_not_of( KEYPAIR_FILTER, loc )) != string::npos ) {
+	while( (loc = key_pair.find_first_not_of( KEYPAIR_FILTER, loc )) != std::string::npos ) {
 		key_pair[loc] = ' ';
 	}
 
@@ -2193,8 +2148,8 @@ void EC2Job::associate_n_attach()
 		tagNames.rewind();
 		while ((tagName = tagNames.next())) {
 				// XXX: Check that tagName does not contain an equal sign (=)
-			string tag;
-			string tagAttr(ATTR_EC2_TAG_PREFIX);
+			std::string tag;
+			std::string tagAttr(ATTR_EC2_TAG_PREFIX);
 			tagAttr.append(tagName);
 			char *value = NULL;
 			if (!jobAd->LookupString(tagAttr, &value)) {
@@ -2420,13 +2375,13 @@ void EC2Job::SetRequestID( const char * requestID ) {
 			// If the job is forgetting about its request ID, make sure that
 			// the resource does, as well; otherwise, we can have one job
 			// updated by both the dedicated and spot batch status processes.
-			myResource->spotJobsByRequestID.remove( m_spot_request_id );
+			myResource->spotJobsByRequestID.erase( m_spot_request_id );
 		}
 		jobAd->AssignExpr( ATTR_EC2_SPOT_REQUEST_ID, "Undefined" );
 		m_spot_request_id = std::string();
 	} else {
 		jobAd->Assign( ATTR_EC2_SPOT_REQUEST_ID, requestID );
-		myResource->spotJobsByRequestID.insert( requestID, this );
+		myResource->spotJobsByRequestID[requestID] = this;
 		m_spot_request_id = requestID;
 	}
 }
@@ -2455,7 +2410,7 @@ void EC2Job::SetRequestID( const char * requestID ) {
 // start trying again when the job is released.))
 //
 
-void EC2Job::ResourceLeaseExpired() {
+void EC2Job::ResourceLeaseExpired( int /* timerID */ ) {
 	errorString = "Resource was down for too long.";
 	dprintf( D_ALWAYS, "(%d.%d) Putting job on hold: resource was down for too long.\n", procID.cluster, procID.proc );
 	gmState = GM_HOLD;
@@ -2489,7 +2444,7 @@ void EC2Job::NotifyResourceDown() {
 			(TimerHandlercpp) & EC2Job::ResourceLeaseExpired,
 			"ResourceLeaseExpired", (Service *) this );
 	} else {
-		ResourceLeaseExpired();
+		ResourceLeaseExpired(-1);
 	}
 }
 

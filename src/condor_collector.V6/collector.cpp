@@ -22,11 +22,7 @@
 #include "condor_config.h"
 #include "condor_attributes.h"
 #include "condor_email.h"
-
 #include "condor_daemon_core.h"
-#include "status_types.h"
-#include "totals.h"
-
 #include "collector_engine.h"
 #include "hashkey.h"
 
@@ -122,15 +118,6 @@ bool CollectorDaemon::want_track_queries_by_subsys = false;
 AdTransforms CollectorDaemon::m_forward_ad_xfm;
 
 //---------------------------------------------------------
-
-
-
-// prototypes of library functions
-typedef void (*SIGNAL_HANDLER)();
-extern "C"
-{
-	void schedule_event ( int month, int day, int hour, int minute, int second, SIGNAL_HANDLER );
-}
 
 
 struct TokenRequestContinuation {
@@ -500,6 +487,8 @@ int CollectorDaemon::receive_query_cedar(int command,
 	pending_query_entry_t *query_entry = NULL;
 	bool handle_in_proc;
 	bool is_locate;
+	const unsigned int BIG_TABLE_MASK = (1<<GENERIC_AD) | (1<<ANY_AD) | (1<<MASTER_AD) | (1<<STARTDAEMON_AD)
+	                                  | (1<<STARTD_AD) | (1<<STARTD_PVT_AD) | (1<<SLOT_AD);
 	KnownSubsystemId clientSubsys = SUBSYSTEM_ID_UNKNOWN;
 	AdTypes whichAds;
 	ClassAd *cad = new ClassAd();
@@ -527,9 +516,19 @@ int CollectorDaemon::receive_query_cedar(int command,
 
 	// Initial query handler
 	whichAds = receive_query_public( command );
-
+	if (whichAds == STARTD_AD) {
+		// for QUERY_STARTD_ADS, we look at the target type to figure which startd ad table to use
+		std::string target;
+		if (cad->LookupString(ATTR_TARGET_TYPE, target)) {
+			whichAds = get_real_startd_ad_type(target.c_str());
+		}
+	}
 	is_locate = cad->Lookup(ATTR_LOCATION_QUERY) != NULL;
-	if (is_locate) { rt.runtime = &HandleLocate_runtime; }
+	if (is_locate) {
+		rt.runtime = &HandleLocate_runtime;
+		// do startd ad locates in the daemon ad table
+		if (whichAds == STARTD_AD) { whichAds = STARTDAEMON_AD; }
+	}
 
 	// Figure out whether to handle the query inline or to fork.
 	handle_in_proc = false;
@@ -538,7 +537,7 @@ int CollectorDaemon::receive_query_cedar(int command,
 	} else if (HandleQueryInProcPolicy == HandleQueryInProcNever) {
 		handle_in_proc = false;
 	} else {
-		bool is_bigtable = ((whichAds == GENERIC_AD) || (whichAds == ANY_AD) || (whichAds == STARTD_PVT_AD) || (whichAds == STARTD_AD) || (whichAds == MASTER_AD));
+		bool is_bigtable = ((1<<whichAds) & BIG_TABLE_MASK) != 0;
 		if (HandleQueryInProcPolicy == HandleQueryInProcSmallTable) {
 			handle_in_proc = !is_bigtable;
 		} else {
@@ -1505,7 +1504,7 @@ int CollectorDaemon::query_scanFunc (CollectorRecord *record)
 	int rc = 1;
 	classad::Value result;
 	bool val;
-	if ( EvalExprTree( __filter__, cad, NULL, result ) &&
+	if ( EvalExprToBool( __filter__, cad, NULL, result ) &&
 		 result.IsBooleanValueEquiv(val) && val ) {
 		// Found a match 
         __numAds__++;
@@ -1612,7 +1611,7 @@ int CollectorDaemon::setAttrLastHeardFrom (ClassAd* cad, unsigned long time)
 
 	classad::Value result;
 	bool val;
-	if ( EvalExprTree( __filter__, cad, NULL, result ) &&
+	if ( EvalExprToBool( __filter__, cad, NULL, result ) &&
 		 result.IsBooleanValueEquiv(val) && val ) {
 
 		cad->Assign( ATTR_LAST_HEARD_FROM, time );
@@ -1921,6 +1920,10 @@ void CollectorDaemon::Config()
 		auto_free_ptr tmp(param("CONDOR_VIEW_CLASSAD_TYPES"));
 		if (tmp) {
 			viewCollectorTypes = new StringList(tmp);
+			if (viewCollectorTypes->contains_anycase(STARTD_OLD_ADTYPE) && 
+				! viewCollectorTypes->contains_anycase(STARTD_SLOT_ADTYPE)) {
+				viewCollectorTypes->append(STARTD_SLOT_ADTYPE);
+			}
 			auto_free_ptr types(viewCollectorTypes->print_to_string());
 			dprintf(D_ALWAYS, "CONDOR_VIEW_CLASSAD_TYPES configured, will forward ad types: %s\n",
 				types ? types.ptr() : "");
@@ -2044,7 +2047,7 @@ void CollectorDaemon::Shutdown()
 	return;
 }
 
-void CollectorDaemon::sendCollectorAd()
+void CollectorDaemon::sendCollectorAd(int /* tid */)
 {
     // compute submitted jobs information
     submittorRunningJobs = 0;
@@ -2105,7 +2108,7 @@ void CollectorDaemon::sendCollectorAd()
 
 	CollectorRecord* self_rec = nullptr;
 	if( ! (self_rec = collector.collect( UPDATE_COLLECTOR_AD, selfAd, condor_sockaddr::null, error )) ) {
-		dprintf( D_ALWAYS | D_FAILURE, "Failed to add my own ad to myself (%d).\n", error );
+		dprintf( D_ERROR, "Failed to add my own ad to myself (%d).\n", error );
 		delete selfAd;
 	}
 
@@ -2135,7 +2138,6 @@ void CollectorDaemon::init_classad(int interval)
     ad = new ClassAd();
 
     SetMyTypeName(*ad, COLLECTOR_ADTYPE);
-    SetTargetTypeName(*ad, "");
 
     char *tmp;
     tmp = param( "CONDOR_ADMIN" );
@@ -2301,7 +2303,7 @@ CollectorDaemon::forward_classad_to_view_collector(int cmd,
             if (proj_expr) {
                 classad::Value val;
                 const char * proj_str = NULL;
-                if (EvalExprTree(proj_expr, theAd, NULL, val) && val.IsStringValue(proj_str)) {
+                if (EvalExprToString(proj_expr, theAd, NULL, val) && val.IsStringValue(proj_str)) {
                     add_attrs_from_string_tokens(proj, proj_str);
                 }
                 if ( ! proj.empty()) { whitelist = &proj; }

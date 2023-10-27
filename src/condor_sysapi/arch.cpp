@@ -39,19 +39,6 @@
 #include "my_popen.h"
 #endif
 
-/* ok, here's the deal with these. For some reason, gcc on IRIX is just old
-	enough to where it doesn't understand things like static const FALSE = 0.
-	So these two things used to be defined as the above, but it would fail with
-	a 'initializer element is not constant' during compile. I have defined
-	them as to make the preprocessor do the work instead of a const int.
-	-psilord 06/01/99 */
-#ifndef TRUE
-#define TRUE 1
-#endif
-#ifndef FALSE
-#define FALSE 0
-#endif
-
 #if defined(WIN32)
 
 // Names of all the architectures supported for Windows (Only some of
@@ -105,16 +92,16 @@ sysapi_uname_opsys(void)
 	return sysapi_opsys();
 }
 
-static int windows_inited = FALSE;
-static const char* opsys = NULL;
-static const char* opsys_versioned = NULL;
+static bool windows_inited = false;
+static const char* opsys = nullptr;
+static const char* opsys_versioned = nullptr;
 static int opsys_version = 0;
-static const char* opsys_name = NULL;
-static const char* opsys_long_name = NULL;
-static const char* opsys_short_name = NULL;
+static const char* opsys_name = nullptr;
+static const char* opsys_long_name = nullptr;
+static const char* opsys_short_name = nullptr;
 static int opsys_major_version = 0;
-static const char* opsys_legacy = NULL;
-static const char* opsys_super_short_name = NULL;
+static const char* opsys_legacy = nullptr;
+static const char* opsys_super_short_name = nullptr;
 
 
 // Find/create all opsys params in this method using OSVERSIONINFO
@@ -129,13 +116,13 @@ sysapi_get_windows_info(void)
 	if (GetVersionEx((LPOSVERSIONINFO)&info) > 0 ) {
 		switch(info.dwPlatformId) {
 		case VER_PLATFORM_WIN32s:
-			sprintf(tmp_info, "WIN32s%d%d", info.dwMajorVersion, info.dwMinorVersion);
+			snprintf(tmp_info, sizeof(tmp_info), "WIN32s%d%d", info.dwMajorVersion, info.dwMinorVersion);
 			break;
 		case VER_PLATFORM_WIN32_WINDOWS:
-			sprintf(tmp_info, "WIN32%d%d", info.dwMajorVersion, info.dwMinorVersion);
+			snprintf(tmp_info, sizeof(tmp_info), "WIN32%d%d", info.dwMajorVersion, info.dwMinorVersion);
 			break;
 		case VER_PLATFORM_WIN32_NT:
-			sprintf(tmp_info, "WINNT%d%d", info.dwMajorVersion, info.dwMinorVersion);
+			snprintf(tmp_info, sizeof(tmp_info), "WINNT%d%d", info.dwMajorVersion, info.dwMinorVersion);
 			break;
 		}
 	}
@@ -158,19 +145,19 @@ sysapi_get_windows_info(void)
 		opsys_super_short_name = strdup("Unknown");
 	}
 
-        sprintf(tmp_info, "Win%s",  opsys_super_short_name );
+	snprintf(tmp_info, sizeof(tmp_info), "Win%s",  opsys_super_short_name );
 	opsys_short_name = strdup( tmp_info );
 
         opsys_version = info.dwMajorVersion * 100 + info.dwMinorVersion;
     	opsys_major_version = opsys_version;
 
-        sprintf(tmp_info, "Windows%s",  opsys_super_short_name );
+	snprintf(tmp_info, sizeof(tmp_info), "Windows%s",  opsys_super_short_name );
 	opsys_name = strdup( tmp_info );
 
-        sprintf(tmp_info, "Windows %s SP%d",  opsys_super_short_name, info.wServicePackMajor);
+	snprintf(tmp_info, sizeof(tmp_info), "Windows %s SP%d",  opsys_super_short_name, info.wServicePackMajor);
 	opsys_long_name = strdup( tmp_info );
 
-        sprintf(tmp_info, "%s%d",  opsys, opsys_version);
+	snprintf(tmp_info, sizeof(tmp_info), "%s%d",  opsys, opsys_version);
 	opsys_versioned = strdup( tmp_info );
 
         if (!opsys) {
@@ -193,7 +180,7 @@ sysapi_get_windows_info(void)
         }
 
 	if ( opsys ) {
-		windows_inited = TRUE;
+		windows_inited = true;
 	}
 }
 
@@ -285,8 +272,8 @@ void sysapi_opsys_dump(int category)
 
 #else
 
-static int arch_inited = FALSE;
-static int utsname_inited = FALSE;
+static bool arch_inited = false;
+static bool utsname_inited = false;
 static const char* arch = NULL;
 static const char* uname_arch = NULL;
 static const char* uname_opsys = NULL;
@@ -342,7 +329,7 @@ init_utsname(void)
 	}
         
 	if ( utsname_sysname && utsname_nodename && utsname_release ) {
-		utsname_inited = TRUE;
+		utsname_inited = true;
 	}
 }
 
@@ -463,7 +450,7 @@ init_arch(void)
 	arch = sysapi_translate_arch( buf.machine, buf.sysname );
 
 	if ( arch && opsys ) {
-		arch_inited = TRUE;
+		arch_inited = true;
 	}
 }
 
@@ -503,7 +490,7 @@ sysapi_get_darwin_info(void)
 		dprintf(D_FULLDEBUG, "UNEXPECTED MacOS version string %s", ver_str);
 	}
 
-    sprintf( tmp_info, "%s%d.%d", os_name, major, minor);
+    snprintf( tmp_info, sizeof(tmp_info), "%s%d.%d", os_name, major, minor);
     opsys_long_name = strdup( tmp_info );
 
     if( !opsys_long_name ) {
@@ -513,7 +500,9 @@ sysapi_get_darwin_info(void)
 	opsys_major_version = major;
 
 	const char *osname = "Unknown";
-	if ( major == 12 ) {
+	if ( major == 13 ) {
+		osname = "Ventura";
+	} else if ( major == 12 ) {
 		osname = "Monterey";
 	} else if ( major == 11 ) {
 		osname = "BigSur";
@@ -540,7 +529,7 @@ sysapi_get_bsd_info( const char *tmp_opsys_short_name, const char *tmp_release)
     char tmp_info[strlen(tmp_opsys_short_name) + 1 + 10];
     char *info_str;
 
-    sprintf( tmp_info, "%s%s", tmp_opsys_short_name, tmp_release);
+    snprintf( tmp_info, sizeof(tmp_info), "%s%s", tmp_opsys_short_name, tmp_release);
     info_str = strdup( tmp_info );
 
     if( !info_str ) {
@@ -569,7 +558,7 @@ sysapi_get_linux_info(void)
 		if (ret == NULL) {
 			strcpy( tmp_str, "Unknown" );
 		} 
-		dprintf(D_FULLDEBUG, "Result of reading %s:  %s \n", etc_issue_path[i], tmp_str);
+		dprintf(D_CONFIG, "Result of reading %s:  %s \n", etc_issue_path[i], tmp_str);
 		fclose(my_fp);
 
 		// trim trailing spaces and other cruft
@@ -671,6 +660,10 @@ sysapi_find_linux_name( const char *info_str )
         {
                 distro = strdup("Rocky");
         }
+        else if ( strstr(distro_name_lc, "almalinux") )
+        {
+	        distro = strdup("AlmaLinux");
+        }
         else if ( strstr(distro_name_lc, "amazon linux") )
         {
                 distro = strdup("AmazonLinux");
@@ -751,12 +744,12 @@ sysapi_get_unix_info( const char *sysname,
             pver = release;
 		}
 		if (!strcmp(version,"11.0")) version = "11";
-        sprintf( tmp, "Solaris %s.%s", version, pver );
+        snprintf( tmp, sizeof(tmp), "Solaris %s.%s", version, pver );
 	}
 
 	else {
 			// Unknown, just use what uname gave:
-		sprintf( tmp, "%s", sysname);
+		snprintf( tmp, sizeof(tmp), "%s", sysname);
         pver = release;
 	}
         if (pver) {
@@ -807,7 +800,7 @@ sysapi_find_opsys_versioned( const char *tmp_opsys, int tmp_opsys_major_version 
         char tmp_opsys_versioned[strlen(tmp_opsys) + 1 + 10];
         char *my_opsys_versioned;
 
-        sprintf( tmp_opsys_versioned, "%s%d", tmp_opsys, tmp_opsys_major_version);
+        snprintf( tmp_opsys_versioned, sizeof(tmp_opsys_versioned), "%s%d", tmp_opsys, tmp_opsys_major_version);
 
 	my_opsys_versioned = strdup( tmp_opsys_versioned );
         if( !my_opsys_versioned ) {
@@ -866,22 +859,21 @@ sysapi_translate_opsys_version ( const char *info_str)
 const char *
 sysapi_translate_arch( const char *machine, const char *)
 {
-	char tmp[64];
-	char *tmparch;
+	const char *arch;
 
 		// Get ARCH
 		//mikeu: I modified this to also accept values from Globus' LDAP server
 	if( !strcmp(machine, "i86pc") ) {
-		sprintf( tmp, "INTEL" );
+		arch = "INTEL";
 	}
 	else if( !strcmp(machine, "i686") ) {
-		sprintf( tmp, "INTEL" );
+		arch = "INTEL";
 	}
 	else if( !strcmp(machine, "i586") ) {
-		sprintf( tmp, "INTEL" );
+		arch = "INTEL";
 	}
 	else if( !strcmp(machine, "i486") ) {
-		sprintf( tmp, "INTEL" );
+		arch = "INTEL";
 	}
 	else if( !strcmp(machine, "i386") ) { //LDAP entry
 #if defined(Darwin)
@@ -899,51 +891,47 @@ sysapi_translate_arch( const char *machine, const char *)
 		size_t len = sizeof(val);
 
 		/* assume x86 */
-		sprintf( tmp, "INTEL" );
+		arch = "INTEL";
 		ret = sysctlbyname("kern.osrelease", &val, &len, NULL, 0);
 		if (ret == 0 && strncmp(val, "10.", 3) == 0) {
 			/* but we could be proven wrong */
-			sprintf( tmp, "X86_64" );
+			arch = "X86_64";
 		}
 #else
-		sprintf( tmp, "INTEL" );
+		arch = "INTEL";
 #endif
 	}
 	else if( !strcmp(machine, "ia64") ) {
-		sprintf( tmp, "IA64" );
+		arch = "IA64";
 	}
 	else if( !strcmp(machine, "x86_64") ) {
-		sprintf( tmp, "X86_64" );
+		arch = "X86_64";
 	}
 	//
 	// FreeBSD 64-bit reports themselves as "amd64"
 	// Andy - 01/25/2008
 	//
 	else if( !strcmp(machine, "amd64") ) {
-		sprintf( tmp, "X86_64" );
+		arch = "X86_64";
 	}
 	else if( !strcmp(machine, "Power Macintosh") ) { //LDAP entry
-		sprintf( tmp, "PPC" );
+		arch = "PPC";
 	}
 	else if( !strcmp(machine, "ppc") ) {
-		sprintf( tmp, "PPC" );
+		arch = "PPC";
 	}
 	else if( !strcmp(machine, "ppc32") ) {
-		sprintf( tmp, "PPC" );
+		arch = "PPC";
 	}
 	else if( !strcmp(machine, "ppc64") ) {
-		sprintf( tmp, "PPC64" );
+		arch = "PPC64";
 	}
 	else {
 			// Unknown, just use what uname gave:
-		sprintf( tmp, "%s", machine );
+		arch = machine;
 	}
 
-	tmparch = strdup( tmp );
-	if( !tmparch ) {
-		EXCEPT( "Out of memory!" );
-	}
-	return( tmparch );
+	return strdup(arch);
 }
 
 

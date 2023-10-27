@@ -25,7 +25,6 @@
 #include "collector.h"
 #include <set>
 #include "HashTable.h"
-#include "extArray.h"
 
 //---------------------------------------------------
 
@@ -61,8 +60,8 @@ struct GeneralRecord {
 //---------------------------------------------------
 
 typedef HashTable<std::string, GeneralRecord*> AccHash;
-typedef ExtArray< int > ExtIntArray;
-typedef ExtArray< fpos_t* > ExtOffArray;
+typedef std::vector< int > ExtIntArray;
+typedef std::vector< fpos_t* > ExtOffArray;
 
 //---------------------------------------------------
 
@@ -92,7 +91,7 @@ public:
 	static int SendListReply(Stream*,const std::string& FileName, int FromDate, int ToDatei, std::set<std::string>& Names);
 	static int SendDataReply(Stream*,const std::string& FileName, int FromDate, int ToDate, int Options, const std::string& Arg);
 
-	static void WriteHistory();
+	static void WriteHistory(int tid);
 	static int SubmittorScanFunc(CollectorRecord*);
 	static int SubmittorTotalFunc(void);
 	static int StartdScanFunc(CollectorRecord*);
@@ -108,7 +107,7 @@ private:
 
 	// Constants
 
-	enum { HistoryLevels=3 };
+	static const int HistoryLevels=3;
 	enum { SubmittorData, StartdData, GroupsData, SubmittorGroupsData, CkptData, DataSetCount };
 
 	// State variables - data set information
@@ -126,8 +125,8 @@ private:
 	// Variables used for quick searches by condor_stats
 
 	static HashTable< std::string, int >* FileHash;
-	static ExtArray< ExtIntArray* >* TimesArray;
-	static ExtArray< ExtOffArray* >* OffsetsArray;
+	static std::vector< ExtIntArray* >* TimesArray;
+	static std::vector< ExtOffArray* >* OffsetsArray;
 
 	// misc variables
 

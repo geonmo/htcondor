@@ -58,7 +58,7 @@ class Worker {
 	~Worker();
 
 	bool removeRequest(int req_id);
-	int numOfRequest(void) const { return m_request_list.Number(); }
+	int numOfRequest(void) const { return (int) m_request_list.size(); }
 
 	int m_id;
 
@@ -67,7 +67,7 @@ class Worker {
 
 	pthread_cond_t m_cond;
 
-	SimpleList<Request*> m_request_list;
+	std::vector<Request*> m_request_list;
 };
 
 #define MIN_NUMBER_WORKERS 2
@@ -85,7 +85,6 @@ class IOProcess {
 
 	Worker* createNewWorker(void);
 	Worker* findFreeWorker(void);
-	Worker* findWorker(int id);
 	bool removeWorkerFromWorkerList(int id);
 
 	Request* addNewRequest(const char* cmd);
@@ -116,9 +115,9 @@ class IOProcess {
 
 	StringList m_result_list; // The list of results ready to be output to IO
 
-	HashTable<int, Worker*> m_workers_list;
+	std::map<int, Worker> m_workers_list;
 
-	SimpleList<Request*> m_pending_req_list;
+	std::vector<Request*> m_pending_req_list;
 };
 
 #endif

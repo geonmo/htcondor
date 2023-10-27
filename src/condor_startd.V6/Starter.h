@@ -50,7 +50,7 @@ public:
 	bool	signal(int);
 	bool	killfamily();
 	void	exited(Claim *, int status);
-	int 	spawn(Claim *, time_t now, Stream* s );
+	pid_t 	spawn(Claim *, time_t now, Stream* s );
 	pid_t	pid() const {return s_pid;};
 	bool	active() const;
 	const ProcFamilyUsage & updateUsage(void);
@@ -76,11 +76,11 @@ public:
 
 		// Send SIGKILL to starter + process group (called by our kill
 		// timer if we've been hardkilling too long).
-	void	sigkillStarter( void );
+	void	sigkillStarter( int timerID = -1 );
 
 		// Escalate to a fast shutdown of the job.
 		// Called by our softkill timer
-	void softkillTimeout( void );
+	void softkillTimeout( int timerID = -1 );
 	
 	static void	publish( ClassAd* ad );
 

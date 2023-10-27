@@ -12,7 +12,7 @@ transfer mechanism allows the user to explicitly select which input files are
 transferred to the worker node before the
 job starts. HTCondor will transfer these files, potentially 
 delaying this transfer request, if starting the transfer right away
-would overload the submit machine.  Queueing requests like this prevents
+would overload the access point.  Queueing requests like this prevents
 the crashes so common with too-busy shared file servers. These input files are placed
 into a scratch directory on the worker node, which is the starting current 
 directory of the job.  When the job completes, by default, HTCondor detects any
@@ -26,27 +26,27 @@ Specifying If and When to Transfer Files
 
 To enable the file transfer mechanism, place this command in the job's
 submit description file:
-**should_transfer_files** :index:`should_transfer_files<single: should_transfer_files; submit commands>`
+:subcom:`should_transfer_files<definition>`
 
 .. code-block:: condor-submit
 
       should_transfer_files = YES
 
 Setting the
-**should_transfer_files** :index:`should_transfer_files<single: should_transfer_files; submit commands>`
+:subcom:`should_transfer_files`
 command explicitly enables or disables the file transfer mechanism. The
 command takes on one of three possible values:
 
 #. YES: HTCondor transfers the input sandbox from
-   the submit machine to the execute machine.  The output sandbox 
-   is transferred back to the submit machine.  The command
-   **when_to_transfer_output** :index:`when_to_transfer_output<single: when_to_transfer_output; submit commands>`.
+   the access point to the execute machine.  The output sandbox 
+   is transferred back to the access point.  The command
+   :subcom:`when_to_transfer_output<definition>`.
    controls when the output sandbox is transferred back, and what directory
    it is stored in.
 
 #. IF_NEEDED: HTCondor only transfers sandboxes when the job is matched with
    a machine in a different ``FileSystemDomain`` than
-   the one the submit machine belongs to, as if
+   the one the access point belongs to, as if
    should_transfer_files = YES. If the job is matched with a machine
    in the same ``FileSystemDomain`` as the submitting machine, HTCondor 
    will not transfer files and relies on the shared file system.
@@ -54,21 +54,21 @@ command takes on one of three possible values:
    is the responsibility of the user to ensure that all data used by the
    job is accessible on the remote worker node.
 
-The **when_to_transfer_output** command tells HTCondor when output
-files are to be transferred back to the submit machine.  The command
+The :subcom:`when_to_transfer_output` command tells HTCondor when output
+files are to be transferred back to the access point.  The command
 takes on one of three possible values:
 
 #. ``ON_EXIT`` (the default): HTCondor transfers the output sandbox
-   back to the submit machine only when the job exits on its own. If the
+   back to the access point only when the job exits on its own. If the
    job is preempted or removed, no files are transferred back.
 #. ``ON_EXIT_OR_EVICT``: HTCondor behaves the same as described for the
    value ON_EXIT when the job exits on its own. However, each
    time the job is evicted from a machine, the output sandbox is
-   transferred back to the submit machine and placed under the **SPOOL** directory.
+   transferred back to the access point and placed under the **SPOOL** directory.
    eviction time. Before the job starts running again, the former output
    sandbox is copied to the job's new remote scratch directory.
 
-   If **transfer_output_files** :index:`transfer_output_files<single: transfer_output_files; submit commands>`
+   If :subcom:`transfer_output_files<definition>`.
    is specified, this list governs which files are transferred back at eviction
    time. If a file listed in **transfer_output_files** does not exist
    at eviction time, the job will go on hold.
@@ -77,11 +77,11 @@ takes on one of three possible values:
    resume from where it left off.
 #. ``ON_SUCCESS``: HTCondor transfers files like ``ON_EXIT``, but only if
    the job succeeds, as defined by the ``success_exit_code`` submit command.
-   The ``success_exit_code`` command must be used, even for the default
-   exit code of 0.  (See the :doc:`/man-pages/condor_submit` man page.)
+   The :subcom:`success_exit_code` command must be used, even for the default
+   exit code of 0.
 
 The default values for these two submit commands make sense as used
-together. If only **should_transfer_files** is set, and set to the
+together. If only :subcom:`should_transfer_files` is set, and set to the
 value ``NO``, then no output files will be transferred, and the value of
 **when_to_transfer_output** is irrelevant. If only
 **when_to_transfer_output** is set, and set to the value
@@ -106,15 +106,15 @@ following files before the job is run on a remote machine as the input
 sandbox:
 
 #. the executable, as defined with the
-   **executable** :index:`executable<single: executable; submit commands>` command
+   :subcom:`executable<when transfered>` command
 #. the input, as defined with the
-   **input** :index:`input<single: input; submit commands>` command
+   :subcom:`input<when transfered>` command
 #. any jar files, for the **java** universe, as defined with the
-   **jar_files** :index:`jar_files<single: jar_files; submit commands>` command
+   :subcom:`jar_files<when transfered>` command
 
 If the job requires other input files, the submit description file
 should have the
-**transfer_input_files** :index:`transfer_input_files<single: transfer_input_files; submit commands>`
+:subcom:`transfer_input_files<adding additional>`
 command. This comma-separated list specifies any other files, URLs, or
 directories that HTCondor is to transfer to the remote scratch
 directory, to set up the execution environment for the job before it is
@@ -134,36 +134,36 @@ specified by the input command (``my_input``).  The files ``file1``
 and ``file2`` are also transferred, by explicit user instruction.
 
 If the file transfer mechanism is enabled, HTCondor will transfer the
-following files from the execute machine back to the submit machine
+following files from the execute machine back to the access point
 after the job exits, as the output sandbox.
 
-#. the output file, as defined with the **output** command
-#. the error file, as defined with the **error** command
+#. the output file, as defined with the :subcom:`output` command
+#. the error file, as defined with the :subcom:`error` command
 #. any files created by the job in the remote scratch directory.
 
-A path given for **output** and **error** commands represents a path on
-the submit machine. If no path is specified, the directory specified
-with **initialdir** :index:`initialdir<single: initialdir; submit commands>` is
+A path given for :subcom:`output` and :subcom:`error` submit commands represents a path on
+the access point. If no path is specified, the directory specified
+with :subcom:`initialdir<and file transfer>` is
 used, and if that is not specified, the directory from which the job was
 submitted is used. At the time the job is submitted, zero-length files
-are created on the submit machine, at the given path for the files
-defined by the **output** and **error** commands. This permits job
+are created on the access point, at the given path for the files
+defined by the :subcom:`output` and :subcom:`error` commands. This permits job
 submission failure, if these files cannot be written by HTCondor.
 
 To restrict the output files or permit entire directory contents to be
 transferred, specify the exact list with
-**transfer_output_files** :index:`transfer_output_files<single: transfer_output_files; submit commands>`.
+:subcom:`transfer_output_files<when files missing>`.
 When this comma separated list is defined, and any of the files or directories do not
 exist as the job exits, HTCondor considers this an error, and places the
 job on hold. Setting
-**transfer_output_files** :index:`transfer_output_files<single: transfer_output_files; submit commands>`
+:subcom:`transfer_output_files<when empty string>`
 to the empty string ("") means no files are to be transferred. When this
 list is defined, automatic detection of output files created by the job
 is disabled. Paths specified in this list refer to locations on the
 execute machine. The naming and placement of files and directories
 relies on the term base name. By example, the path ``a/b/c`` has the
 base name ``c``. It is the file name or directory name with all
-directories leading up to that name stripped off. On the submit machine,
+directories leading up to that name stripped off. On the access point,
 the transferred files or directories are named using only the base name.
 Therefore, each output file or directory must have a different name,
 even if they originate from different paths.
@@ -193,7 +193,7 @@ If the submit description file sets
 
     transfer_output_files = o1,o2,d1
 
-then transferred back to the submit machine will be
+then transferred back to the access point will be
 
 .. code-block:: text
 
@@ -214,7 +214,7 @@ If, instead, the submit description file sets
 
     transfer_output_files = o1,o2,d1/o3
 
-then transferred back to the submit machine will be
+then transferred back to the access point will be
 
 .. code-block:: text
 
@@ -229,25 +229,25 @@ File Paths for File Transfer
 ''''''''''''''''''''''''''''
 
 The file transfer mechanism specifies file names or URLs on
-the file system of the submit machine and file names on the
+the file system of the access point and file names on the
 execute machine. Care must be taken to know which machine, submit or
 execute, is referencing the file.
 
 Files in the
-**transfer_input_files** :index:`transfer_input_files<single: transfer_input_files; submit commands>`
-command are specified as they are accessed on the submit machine. The
+:subcom:`transfer_input_files<relative to access point>`
+command are specified as they are accessed on the access point. The
 job, as it executes, accesses files as they are found on the execute
 machine.
 
 There are four ways to specify files and paths for
-**transfer_input_files** :index:`transfer_input_files<single: transfer_input_files; submit commands>`:
+:subcom:`transfer_input_files<ways to specify>`:
 
 #. Relative to the current working directory as the job is submitted, if
    the submit command
-   **initialdir** :index:`initialdir<single: initialdir; submit commands>` is not
+   :subcom:`initialdir<and transfer input>` is not
    specified.
 #. Relative to the initial directory, if the submit command
-   **initialdir** :index:`initialdir<single: initialdir; submit commands>` is
+   :subcom:`initialdir<and transfer input>` is
    specified.
 #. Absolute file paths.
 #. As an URL, which should be accessible by the execute machine.
@@ -260,7 +260,7 @@ Because all files and directories listed for transfer are placed into a
 single, flat directory, inputs must be uniquely named to avoid collision
 when transferred.
 
-A job may instead set ``preserve_relative_paths`` (to ``True``), in which
+A job may instead set :subcom:`preserve_relative_paths` (to ``True``), in which
 case the relative paths of transferred files are preserved.  For example,
 although the input list ``dirA/file1, dirB/file1`` would normally result in
 a collision, instead HTCondor will create the directories ``dirA`` and
@@ -268,16 +268,16 @@ a collision, instead HTCondor will create the directories ``dirA`` and
 of ``file1``.
 
 Both relative and absolute paths may be used in
-**transfer_output_files** :index:`transfer_output_files<single: transfer_output_files; submit commands>`.
+:subcom:`transfer_output_files<mixing relative and absolute>`.
 Relative paths are relative to the job's remote scratch directory on the
 execute machine. When the files and directories are copied back to the
-submit machine, they are placed in the job's initial working directory
+access point, they are placed in the job's initial working directory
 as the base name of the original path. An alternate name or path may be
 specified by using
-**transfer_output_remaps** :index:`transfer_output_remaps<single: transfer_output_remaps; submit commands>`.
+:subcom:`transfer_output_remaps<definition>`.
 
-The ``preserve_relative_paths`` command also applies to relative paths
-specified in **transfer_output_files** (if not remapped).
+The :subcom:`preserve_relative_paths` command also applies to relative paths
+specified in :subcom:`transfer_output_files` (if not remapped).
 
 A job may create files outside the remote scratch directory but within
 the file system of the execute machine, in a directory such as ``/tmp``,
@@ -292,7 +292,7 @@ command-line arguments as it executes: two input file names and an
 output file name. The program executable and the submit description file
 for this job are located in directory ``/scratch/test``.
 
-Here is the directory tree as it exists on the submit machine, for all
+Here is the directory tree as it exists on the access point, for all
 the examples:
 
 .. code-block:: text
@@ -311,7 +311,7 @@ the examples:
 This first example explicitly transfers input files. These input
 files to be transferred are specified relative to the directory
 where the job is submitted. An output file specified in the
-**arguments** :index:`arguments<single: arguments; submit commands>` command,
+:subcom:`arguments<example with output>` command,
 ``out1``, is created when the job is executed. It will be
 transferred back into the directory ``/scratch/test``.
 
@@ -330,9 +330,13 @@ transferred back into the directory ``/scratch/test``.
 
     arguments       = in1 in2 out1
 
+    request_cpus   = 1
+    request_memory = 1024M
+    request_disk   = 10240K
+
     queue
 
-The log file is written on the submit machine, and is not involved
+The log file is written on the access point, and is not involved
 with the file transfer mechanism.
 
 **Example 2**
@@ -357,23 +361,27 @@ the input files.
 
     arguments       = in1 in2 out1
 
+    request_cpus   = 1
+    request_memory = 1024M
+    request_disk   = 10240K
+
     queue
 
 **Example 3**
 
 This third example illustrates the use of the submit command
-**initialdir** :index:`initialdir<single: initialdir; submit commands>`, and its
+:subcom:`initialdir<example with paths>`, and its
 effect on the paths used for the various files. The expected
 location of the executable is not affected by the
-**initialdir** :index:`initialdir<single: initialdir; submit commands>` command.
+:subcom:`initialdir` command.
 All other files (specified by
-**input** :index:`input<single: input; submit commands>`,
-**output** :index:`output<single: output; submit commands>`,
-**error** :index:`error<single: error; submit commands>`,
-**transfer_input_files** :index:`transfer_input_files<single: transfer_input_files; submit commands>`,
+:subcom:`input<example with paths>`,
+:subcom:`output<example with paths>`,
+:subcom:`error<example with paths>`,
+:subcom:`transfer_input_files<example with paths>`,
 as well as files modified or created by the job and automatically
 transferred back) are located relative to the specified
-**initialdir** :index:`initialdir<single: initialdir; submit commands>`.
+:subcom:`initialdir`
 Therefore, the output file, ``out1``, will be placed in the files
 directory. Note that the ``logs2`` directory exists to make this
 example work correctly.
@@ -396,16 +404,20 @@ example work correctly.
 
     arguments       = in1 in2 out1
 
+    request_cpus   = 1
+    request_memory = 1024M
+    request_disk   = 10240K
+
     queue
 
 **Example 4 - Illustrates an Error**
 
 This example illustrates a job that will fail. The files specified
 using the
-**transfer_input_files** :index:`transfer_input_files<single: transfer_input_files; submit commands>`
+:subcom:`transfer_input_files<example that fails>`
 command work correctly (see Example 1). However, relative paths to
 files in the
-**arguments** :index:`arguments<single: arguments; submit commands>` command
+:subcom:`arguments<example that fails>` command
 cause the executing program to fail. The file system on the
 submission side may utilize relative paths to files, however those
 files are placed into the single, flat, remote scratch directory on
@@ -426,6 +438,10 @@ the execute machine.
     transfer_input_files = files/in1,files/in2
 
     arguments       = files/in1 files/in2 files/out1
+
+    request_cpus   = 1
+    request_memory = 1024M
+    request_disk   = 10240K
 
     queue
 
@@ -455,6 +471,10 @@ The executing program's use of absolute paths cannot work.
     transfer_input_files = /scratch/test/files/in1, /scratch/test/files/in2
 
     arguments = /scratch/test/files/in1 /scratch/test/files/in2 /scratch/test/files/out1
+
+    request_cpus   = 1
+    request_memory = 1024M
+    request_disk   = 10240K
 
     queue
 
@@ -492,6 +512,10 @@ initial working directory as ``/scratch/test/out1``.
     transfer_output_files = /tmp/out1
 
     arguments       = in1 in2 /tmp/out1
+    request_cpus   = 1
+    request_memory = 1024M
+    request_disk   = 10240K
+
 
     queue
 
@@ -500,7 +524,7 @@ Dataflow Jobs
 
 A **dataflow job** is a job that might not need to run because its desired
 outputs already exist. To skip such a job, add the following line to your
-submit file:
+submit file: :index:`dataflow<single: arguments; example>`
 
 .. code-block:: condor-submit
 
@@ -522,7 +546,7 @@ Public Input Files
 There are some cases where HTCondor's file transfer mechanism is
 inefficient. For jobs that need to run a large number of times, the
 input files need to get transferred for every job, even if those files
-are identical. This wastes resources on both the submit machine and the
+are identical. This wastes resources on both the access point and the
 network, slowing overall job execution time.
 
 Public input files allow a user to specify files to be transferred over
@@ -532,7 +556,7 @@ dramatically improve performance. Public input files are not available
 by default, and need to be explicitly enabled by a system administrator.
 
 To specify files that use this feature, the submit file should include a
-**public_input_files** :index:`public_input_files<single: public_input_files; submit commands>`
+:subcom:`public_input_files<example>`
 command. This comma-separated list specifies files which HTCondor will
 transfer using the HTTP mechanism. For example:
 
@@ -544,11 +568,11 @@ transfer using the HTTP mechanism. For example:
       public_input_files = public_data1,public_data2
 
 Similar to the regular
-**transfer_input_files** :index:`transfer_input_files<single: transfer_input_files; submit commands>`,
+:subcom:`transfer_input_files<and public input files>`,
 the files specified in
-**public_input_files** :index:`public_input_files<single: public_input_files; submit commands>`
+:subcom:`public_input_files<example>`
 can be relative to the submit directory, or absolute paths. You can also
-specify an **initialDir** :index:`initialDir<single: initialDir; submit commands>`,
+specify an :subcom:`initialDir<and public input files>`,
 and *condor_submit* will look for files relative to that directory. The
 files must be world-readable on the file system (files with permissions
 set to 0644, directories with permissions set to 0755).
@@ -564,14 +588,14 @@ This section describes HTCondor's behavior for some error cases in
 dealing with the transfer of files.
 
  Disk Full on Execute Machine
-    When transferring any files from the submit machine to the remote
+    When transferring any files from the access point to the remote
     scratch directory, if the disk is full on the execute machine, then
     the job is place on hold.
  Error Creating Zero-Length Files on Submit Machine
     As a job is submitted, HTCondor creates zero-length files as
-    placeholders on the submit machine for the files defined by
-    **output** :index:`output<single: output; submit commands>` and
-    **error** :index:`error<single: error; submit commands>`. If these files
+    placeholders on the access point for the files defined by
+    :subcom:`output<created at submit>` and
+    :subcom:`error<created at submit>`. If these files
     cannot be created, then job submission fails.
 
     This job submission failure avoids having the job run to completion,
@@ -586,11 +610,11 @@ dealing with the transfer of files.
     During transfer, if any of the following three similar types of
     errors occur, the job is put on hold as the error occurs.
 
-    #. If the file cannot be opened on the submit machine, for example
+    #. If the file cannot be opened on the access point, for example
        because the system is out of inodes.
-    #. If the file cannot be written on the submit machine, for example
+    #. If the file cannot be written on the access point, for example
        because the permissions do not permit it.
-    #. If the write of the file on the submit machine fails, for example
+    #. If the write of the file on the access point fails, for example
        because the system is out of disk space.
 
 .. _file_transfer_using_a_url:
@@ -602,21 +626,21 @@ File Transfer Using a URL
 :index:`output file(s) specified by URL<single: output file(s) specified by URL; file transfer mechanism>`
 :index:`URL file transfer`
 
-Instead of file transfer that goes only between the submit machine and
+Instead of file transfer that goes only between the access point and
 the execute machine, HTCondor has the ability to transfer files from a
 location specified by a URL for a job's input file, or from the execute
 machine to a location specified by a URL for a job's output file(s).
 This capability requires administrative set up, as described in
-the :doc:`/admin-manual/setting-up-special-environments` section.
+the :doc:`/admin-manual/file-and-cred-transfer` section.
 
-The transfer of an input file is restricted to vanilla and vm universe
-jobs only. HTCondor's file transfer mechanism must be enabled.
+URL file transfers work in most HTCondor job universes, but not grid, local
+or scheduler.  HTCondor's file transfer mechanism must be enabled.
 Therefore, the submit description file for the job will define both
-**should_transfer_files** :index:`should_transfer_files<single: should_transfer_files; submit commands>`
+:subcom:`should_transfer_files<with URLs>`
 and
-**when_to_transfer_output** :index:`when_to_transfer_output<single: when_to_transfer_output; submit commands>`.
+:subcom:`when_to_transfer_output<with URLs>`.
 In addition, the URL for any files specified with a URL are given in the
-**transfer_input_files** :index:`transfer_input_files<single: transfer_input_files; submit commands>`
+:subcom:`transfer_input_files<with URLs>`
 command. An example portion of the submit description file for a job
 that has a single file specified with a URL:
 
@@ -633,7 +657,7 @@ all files that the job creates or modifies, HTCondor's file transfer
 mechanism must be enabled. In this sample portion of the submit
 description file, the first two commands explicitly enable file
 transfer, and the added
-**output_destination** :index:`output_destination<single: output_destination; submit commands>`
+:subcom:`output_destination<with URLs>`
 command provides both the protocol to be used and the destination of the
 transfer.
 
@@ -649,7 +673,8 @@ machine. This does not interfere with the streaming of output.
 **Uploading to URLs using output file remaps**
 
 File transfer plugins now support uploads as well as downloads. The
-``transfer_output_remaps`` attribute can additionally be used to upload
+:subcom:`transfer_output_remaps` :index:`transfer_output_rempas<single: transfer_output_destination; definition>`
+command can additionally be used to upload
 files to specific URLs when a job completes. To do this, set the
 destination for an output file to a URL instead of a filename. For
 example:
@@ -718,7 +743,7 @@ and ``$_CONDOR_CREDS/mytokens_group.use``.
 **Transferring files using file transfer plugins**
 
 HTCondor comes with file transfer plugins
-that can communicate with Box.com, Google Drive, and Microsoft OneDrive.
+that can communicate with Box.com, Google Drive, Stash Cache, OSDF, and Microsoft OneDrive.
 Using one of these plugins requires that the HTCondor pool administrator
 has set up the mechanism for HTCondor to gather credentials
 for the desired service,
@@ -730,6 +755,8 @@ from the desired service (see :ref:`jobs_that_require_credentials`).
 To use a file transfer plugin,
 substitute ``https`` in a transfer URL with the service name
 (``box`` for Box.com,
+``stash`` for Stash Cache,
+``osdf`` for OSDF,
 ``gdrive`` for Google Drive, and
 ``onedrive`` for Microsoft OneDrive)
 and reference a file path starting at the root directory of the service.
@@ -778,10 +805,12 @@ information in the submit file:
 
 See the subsections below for specific examples.
 
-You may (like any other URL) specify an S3 URL in ``transfer_input_files``,
-or as part of a remap in ``transfer_output_remaps``.  However, HTCondor does
-not currently support transferring entire buckets or directories.  If you
-specify an ``s3://`` URL as the ``output_destination``, that URL will be
+You may (like any other URL) specify an S3 URL in :subcom:`transfer_input_files`
+:index:`transfer_input_files<single: transfer_input_files; with S3>`,
+or as part of a remap in :subcom:`transfer_output_remaps`.
+:index:`transfer_output_remaps<single: transfer_output_remaps; with S3>`,
+However, HTCondor does not currently support transferring entire buckets or directories.  If you
+specify an ``s3://`` URL as the :subcom:`output_destination`, that URL will be
 used a prefix for each output file's location; if you specify a URL ending a
 ``/``, it will be treated like a directory.
 
@@ -790,8 +819,11 @@ S3 Transfer Recipes
 
 **Transferring files to and from Amazon S3**
 
-Specify your credential files in the submit file using the attributes ``aws_access_key_id_file`` and
-``aws_secret_access_key_file``.  Amazon S3 switched from global buckets
+Specify your credential files in the submit file using the attributes
+:subcom:`aws_access_key_id_file` and :subcom:`aws_secret_access_key_file`.
+:index:`aws_access_key_id_file<single: aws_access_key_id_file; example>`,
+:index:`aws_secret_access_key_file<single: aws_secret_access_key_file; example>`,
+Amazon S3 switched from global buckets
 to region-specific buckets; use the first URL form for the older buckets
 and the second for newer buckets.
 
@@ -817,12 +849,12 @@ Google Cloud Storage implements an `XML API which is interoperable with S3
 <https://cloud.google.com/storage/docs/interoperability>`_. This requires an
 extra step of `generating HMAC credentials
 <https://console.cloud.google.com/storage/settings;tab=interoperability>`_
-to access Cloud Storage through the XML API. Google Cloud best practices are
-to create a Service Account with read/write permission to the bucket and
-`generate HMAC credentials for the service account
-<https://cloud.google.com/storage/docs/migrating#keys>`_.
+to access Cloud Storage. Google Cloud best practices are to create a Service
+Account with read/write permission to the bucket. Read `HMAC keys for Cloud
+Storage <https://cloud.google.com/storage/docs/authentication/hmackeys>`_ for
+more details.
 
-After generating HMAC credentials, they can be used within an HTCondor job:
+After generating HMAC credentials, they can be used within a job:
 
 .. code-block:: condor-submit
 
@@ -833,7 +865,7 @@ After generating HMAC credentials, they can be used within an HTCondor job:
 
 If `Cloud Storage is configured with Private Service Connect
 <https://cloud.google.com/vpc/docs/private-service-connect>`_, then use the S3 URL
-approach defined above. e.g.
+approach with the private Cloud Storage endpoint. e.g.,
 
 .. code-block:: condor-submit
 
@@ -855,5 +887,6 @@ key files described above.
     transfer_input_files = s3://some.other-s3-provider.org/my-bucket/large-input.file
     transfer_output_remaps = "large-output.file = s3://some.other-s3-provider.org/my-bucket/large-output.file"
 
-If you need to specify a region, you may do so using ``aws_region``,
+If you need to specify a region, you may do so using :subcom:`aws_region` :index:`aws_region<single: aws_regoin; with non-AWS S3 cloud>`,,
 despite the name.
+

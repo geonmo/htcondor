@@ -69,7 +69,7 @@ extern char		default_dc_daemon_list[];
 extern time_t	GetTimeStamp(char* file);
 extern int 	   	NewExecutable(char* file, time_t* tsp);
 extern void		tail_log( FILE*, char*, int );
-extern void		run_preen();
+extern void		run_preen(int tid);
 
 extern int condor_main_argc;
 extern char **condor_main_argv;
@@ -151,7 +151,7 @@ daemon::daemon(const char *name, bool is_daemon_core, bool is_h )
 	DoConfig( true );
 
 	// Default log file name...
-	sprintf(buf, "%s_LOG", name);
+	snprintf(buf, sizeof(buf), "%s_LOG", name);
 	log_filename_in_config_file = strdup(buf);
 
 	// Check the process name (is it me?)
@@ -280,7 +280,7 @@ daemon::runs_on_this_host()
 
 
 void
-daemon::Recover()
+daemon::Recover( int /* timerID */ )
 {
 	restarts = 0;
 	recover_tid = -1; 
@@ -356,7 +356,7 @@ int daemon::Restart(bool by_command)
 // This little function is used so when the start timer goes off, we
 // can set the start_tid back to -1 before we actually call Start().
 void
-daemon::DoStart()
+daemon::DoStart( int /* timerID */ )
 {
 	start_tid = -1;
 	Start( true );		// Don't forward this on to the controller!
@@ -372,7 +372,7 @@ daemon::DoConfig( bool init )
 	char	buf[1000];
 
 	// Check for the _FLAG parameter
-	sprintf(buf, "%s_FLAG", name_in_config_file );
+	snprintf(buf, sizeof(buf), "%s_FLAG", name_in_config_file );
 	tmp = param(buf);
 
 	// Previously defind?
@@ -400,7 +400,7 @@ daemon::DoConfig( bool init )
 	}
 
 	// get env settings from config file if present
-	sprintf(buf, "%s_ENVIRONMENT", name_in_config_file );
+	snprintf(buf, sizeof(buf), "%s_ENVIRONMENT", name_in_config_file );
 	char *env_string = param( buf );
 
 	Env env_parser;
@@ -416,11 +416,34 @@ daemon::DoConfig( bool init )
 	this->env.Clear();
 	this->env.MergeFrom(env_parser);
 
+#ifdef LINUX
+	// dprintf calls localtime() (under the hood) a lot.  if the TZ environment
+	// variable is not set, localtime() is required to stat /etc/localtime on 
+	// every call, to see if it hasn't changed.  On busy schedds, this stat consumes
+	// 5 or more percent of our cpu time(!).  Explicitly setting the TZ env var
+	// to :/etc/localtime causes localtime to cache the results.
+	//
+	
+	if (param_boolean("MASTER_SET_TZ", true)) {
+		// But don't overwrite it, if already set
+		if (!env.HasEnv("TZ") && !getenv("TZ")) {
+
+			// /etc/localtime should always exist, but just
+			// double check to be sure
+			struct stat sb;
+			int r = stat("/etc/localtime", &sb);
+			if (r == 0) {
+				env.SetEnv("TZ", ":/etc/localtime");
+			}
+		}
+	}
+#endif
+
 	if( NULL != controller_name ) {
 		DetachController();
 		free( controller_name );
 	}
-	sprintf(buf, "MASTER_%s_CONTROLLER", name_in_config_file );
+	snprintf(buf, sizeof(buf), "MASTER_%s_CONTROLLER", name_in_config_file );
 	controller_name = param( buf );
 	controller = NULL;		// Setup later in Daemons::CheckDaemonConfig()
 	if ( controller_name ) {
@@ -436,19 +459,19 @@ daemon::DoConfig( bool init )
 
 	// XXX These defaults look to be very wrong, compare with 
 	// MASTER_BACKOFF_*.
-	sprintf(buf, "MASTER_%s_BACKOFF_CONSTANT", name_in_config_file );
+	snprintf(buf, sizeof(buf), "MASTER_%s_BACKOFF_CONSTANT", name_in_config_file );
 	m_backoff_constant = param_integer( buf, master_backoff_constant, 1 );
 
-	sprintf(buf, "MASTER_%s_BACKOFF_CEILING", name_in_config_file );
+	snprintf(buf, sizeof(buf), "MASTER_%s_BACKOFF_CEILING", name_in_config_file );
 	m_backoff_ceiling = param_integer( buf, master_backoff_ceiling, 1 );
 
-	sprintf(buf, "MASTER_%s_BACKOFF_FACTOR", name_in_config_file );
+	snprintf(buf, sizeof(buf), "MASTER_%s_BACKOFF_FACTOR", name_in_config_file );
 	m_backoff_factor = param_double( buf, master_backoff_factor, 0 );
 	if( m_backoff_factor <= 0.0 ) {
     	m_backoff_factor = master_backoff_factor;
     }
 	
-	sprintf(buf, "MASTER_%s_RECOVER_FACTOR", name_in_config_file );
+	snprintf(buf, sizeof(buf), "MASTER_%s_RECOVER_FACTOR", name_in_config_file );
 	m_recover_time = param_integer( buf, master_recover_time, 1 );
 
 
@@ -462,7 +485,7 @@ daemon::DoConfig( bool init )
 	// bin/condor_schedd, ... we can simply say SCHEDD = /unsup/...
 	if( ( NULL == flag_in_config_file ) && ( NULL != daemon_name ) ) {
 		*(daemon_name - 2) = '\0';
-		sprintf(buf, "%s_FLAG", name_in_config_file);
+		snprintf(buf, sizeof(buf), "%s_FLAG", name_in_config_file);
 		flag_in_config_file = param(buf);
 		*(daemon_name - 2) = '_';
 	} 
@@ -854,7 +877,7 @@ int daemon::RealStart( )
 			ArgList configArgs;
 			std::string configError;
 			if( configArgs.AppendArgsV1RawOrV2Quoted( daemon_args, configError ) ) {
-				for( int i = 0; i < configArgs.Count(); ++i ) {
+				for( size_t i = 0; i < configArgs.Count(); ++i ) {
 					char const * configArg = configArgs.GetArg( i );
 					if( strcmp( configArg, "-local-name" ) == 0 ) {
 						foundLocalName = true;
@@ -926,7 +949,7 @@ int daemon::RealStart( )
     // allocate them again
     int udp_command_port = command_port;
     if ( isDC ) {
-		int i;
+		size_t i;
 		for(i=0;i<args.Count();i++) {
 			char const *cur_arg = args.GetArg(i);
 			if(strcmp( cur_arg, "-p" ) == 0 ) {
@@ -1040,7 +1063,7 @@ int daemon::RealStart( )
 
 	if ( pid == FALSE ) {
 		// Create_Process failed!
-		dprintf( D_FAILURE|D_ALWAYS,
+		dprintf( D_ERROR,
 				 "ERROR: Create_Process failed trying to start %s\n",
 				 process_name);
 		pid = 0;
@@ -1230,7 +1253,7 @@ daemon::StopPeaceful()
 }
 
 void
-daemon::StopFastTimer()
+daemon::StopFastTimer( int /* timerID */ )
 {
 	StopFast(false);
 }
@@ -1289,7 +1312,7 @@ daemon::StopFast( bool never_forward )
 }
 
 void
-daemon::HardKill()
+daemon::HardKill( int /* timerID */ )
 {
 	if( type == DT_MASTER ) {
 			// Never want to stop master.
@@ -1352,11 +1375,7 @@ daemon::Exited(int status)
 			expected = true;
 		}
 	}
-	int d_flag = D_ALWAYS;
-	if( had_failure ) {
-		d_flag |= D_FAILURE;
-	}
-	dprintf(d_flag, "%s\n", msg.c_str());
+	dprintf(had_failure ? (D_ERROR | D_EXCEPT) : D_ALWAYS, "%s\n", msg.c_str());
 
 		// For HA, release the lock
 	if ( is_ha && ha_lock ) {
@@ -1461,7 +1480,7 @@ daemon::Obituary( int status )
 		email_subject += fmt;
 	}
 
-    sprintf( buf, "%s_ADMIN_EMAIL", name_in_config_file );
+    snprintf( buf, sizeof(buf), "%s_ADMIN_EMAIL", name_in_config_file );
     char *address = param(buf);
     if(address) {
         mailer = email_nonjob_open(address, email_subject.c_str());
@@ -1589,7 +1608,7 @@ daemon::Kill( int sig ) const
 	const char* sig_name = signalName( sig );
 	char buf[32];
 	if( ! sig_name ) {
-		sprintf( buf, "signal %d", sig );
+		snprintf( buf, sizeof(buf), "signal %d", sig );
 		sig_name = buf;
 	}
 	if( status < 0 ) {
@@ -2147,7 +2166,7 @@ bool Daemons::GetDaemonReadyStates(std::string & ready)
 
 // timer callback to handle deferred replys for DC_QUERY_READY command
 void
-Daemons::DeferredQueryReadyReply()
+Daemons::DeferredQueryReadyReply( int /* timerID */ )
 {
 	if (deferred_queries.empty()) {
 		dprintf(D_ALWAYS, "WARNING: DeferredQueryReadyReply called with empty queries list\n");
@@ -2350,7 +2369,7 @@ Daemons::FindDaemon( const char *name )
 
 
 void
-Daemons::CheckForNewExecutable()
+Daemons::CheckForNewExecutable( int /* timerID */ )
 {
 	int found_new = FALSE;
 	std::map<std::string, class daemon*>::iterator iter;
@@ -2503,7 +2522,7 @@ Daemons::CancelRetryStartAllDaemons()
 }
 
 void
-Daemons::RetryStartAllDaemons()
+Daemons::RetryStartAllDaemons( int /* timerID */ )
 {
 	m_retry_start_all_daemons_tid = -1;
 	StartAllDaemons();
@@ -2565,7 +2584,6 @@ Daemons::StopAllDaemons()
 {
 	CancelRetryStartAllDaemons();
 	daemons.SetAllReaper();
-	int running = 0;
 
 	int any_running = 0;
 	int startds_running = 0;
@@ -2598,7 +2616,6 @@ Daemons::StopAllDaemons()
 				!iter->second->OnlyStopWhenMasterStops() )
 			{
 				iter->second->Stop();
-				running++;
 			}
 		}
 	}
@@ -2697,12 +2714,12 @@ Daemons::SetPeacefulShutdown(int timeout)
 void
 Daemons::DoPeacefulShutdown(
 	int             timeout,
-	void (Daemons::*pfn)(void),
+	void (Daemons::*pfn)(int),
 	const char *    lbl)
 {
 	int messages = SetPeacefulShutdown(timeout);
 
-	// if we sent any messages, set a timer to to do the StopPeaceful call.
+	// if we sent any messages, set a timer to do the StopPeaceful call.
 	// to give the messages a chance to arrive.
 	bool fTimer = false;
 	if (messages > 0) {
@@ -2717,7 +2734,7 @@ Daemons::DoPeacefulShutdown(
 	// if the shutdown/restart command isn't going to happen on a timer,
 	// then do it now.
 	if ( ! fTimer) {
-		((this)->*(pfn))();
+		((this)->*(pfn))(-1);
 	}
 }
 
@@ -2837,7 +2854,7 @@ Daemons::RestartMaster()
 }
 
 void
-Daemons::RestartMasterPeaceful()
+Daemons::RestartMasterPeaceful( int /* timerID */ )
 {
 	MasterShuttingDown = TRUE;
 	immediate_restart_master = immediate_restart;
@@ -2958,7 +2975,7 @@ Daemons::ExecMaster()
 
 // Function that actually does the restart of the master.
 void
-Daemons::FinalRestartMaster()
+Daemons::FinalRestartMaster( int /* timerID */ )
 {
 	int i;
 	const condor_utils::SystemdManager & sd = condor_utils::SystemdManager::GetInstance();
@@ -3104,7 +3121,7 @@ Daemons::AllReaper(int pid, int status)
 	// and we need to include the daemons that have been removed from the daemon
 	// list but have not yet been reaped.
 	int daemons = 0, startds = 0;
-	for (auto it : removed_daemons) {
+	for (auto & it : removed_daemons) {
 		const auto d = it.second;
 		if (d->runs_here && d->pid && !d->OnlyStopWhenMasterStops()) {
 			++daemons;
@@ -3446,16 +3463,16 @@ Daemons::Update( ClassAd* ca )
 
 	for( iter = daemon_ptr.begin(); iter != daemon_ptr.end(); iter++ ) {
 		if( iter->second->runs_here || iter->second == master ) {
-			sprintf( buf, "%s_Timestamp",
+			snprintf( buf, sizeof(buf), "%s_Timestamp",
 					 iter->second->name_in_config_file );
 			ca->Assign( buf, (long)iter->second->timeStamp );
 			if( iter->second->pid ) {
-				sprintf( buf, "%s_StartTime",
+				snprintf( buf, sizeof(buf), "%s_StartTime",
 						 iter->second->name_in_config_file );
 				ca->Assign( buf, (long)iter->second->startTime );
 			} else {
 					// No pid, but daemon's supposed to be running.
-				sprintf( buf, "%s_StartTime",
+				snprintf( buf, sizeof(buf), "%s_StartTime",
 						 iter->second->name_in_config_file );
 				ca->Assign( buf, 0 );
 			}
@@ -3471,7 +3488,7 @@ Daemons::Update( ClassAd* ca )
 
 
 void
-Daemons::UpdateCollector()
+Daemons::UpdateCollector( int /* timerID */ )
 {
 	// If we are shutting down, we've already send our invalidation
 	// and we shouldn't further update and un-invalidate or worse,

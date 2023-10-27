@@ -22,8 +22,6 @@
 
 #include "condor_common.h"
 #include "condor_classad.h"
-#include "HashTable.h"
-#include "MyString.h"
 #include "status_types.h"
 
 // object keeps track of totals within a single class (same key)
@@ -31,11 +29,12 @@
 class ClassTotal
 {
   	public:
-		ClassTotal ();
-		virtual ~ClassTotal ();
+		ClassTotal () = default;
+		ClassTotal (ppOption opt) : ppo(opt) {}
+		virtual ~ClassTotal () {};
 
 		static ClassTotal *makeTotalObject(ppOption);
-		static int makeKey( MyString &, ClassAd *, ppOption);
+		static int makeKey( std::string &, ClassAd *, ppOption);
 
 		virtual int update(ClassAd*, int options) 	= 0;
 		virtual void displayHeader(FILE*)= 0;
@@ -44,13 +43,14 @@ class ClassTotal
 		virtual void displayInfo(FILE*, int=0)	= 0;
 
   	protected:
-		ppOption ppo;
+		ppOption ppo = PP_NOTSET;
 };
 
 
 #define TOTALS_OPTION_IGNORE_PARTITIONABLE 0x0001
 #define TOTALS_OPTION_ROLLUP_PARTITIONABLE 0x0002
 #define TOTALS_OPTION_IGNORE_DYNAMIC       0x0004
+#define TOTALS_OPTION_BACKFILL_SLOTS       0x0008 // attribute claimed backfill slots as backfill state
 
 // object manages totals for different classes within the same ppo
 // (e.g., different "Arch/OpSys" in startd normal mode)
@@ -60,14 +60,14 @@ class TrackTotals
 		TrackTotals (ppOption);
 		~TrackTotals();
 
-		int  update(ClassAd *, int options = 0, const char * key=NULL);
+		int  update(ClassAd *, int options = 0, const char * key="");
 		void displayTotals(FILE *, int keyLength);
 		bool haveTotals();
 
 	private:
 		ppOption ppo;
 		int malformed;
-		HashTable<MyString,ClassTotal*> allTotals;
+		std::map<std::string,ClassTotal*> allTotals;
 		ClassTotal*	topLevelTotal;
 };
 
@@ -77,24 +77,23 @@ class TrackTotals
 class StartdNormalTotal : public ClassTotal
 {
 	public:
-		StartdNormalTotal();
+		StartdNormalTotal() : ClassTotal(PP_STARTD_NORMAL) {}
 		virtual int update (ClassAd *, int options);
 		virtual void displayHeader(FILE *);
 		virtual void displayInfo(FILE *, int);
 
   	protected:
-		int machines;
-		int owner;
-		int unclaimed;
-		int claimed;
-		int matched;
-		int preempting;
-#if HAVE_BACKFILL
-		int backfill;
-#endif
-		int drained;
+		int machines=0;
+		int owner=0;
+		int unclaimed=0;
+		int claimed=0;
+		int matched=0;
+		int preempting=0;
+		int drained=0;
+		int backfill=0;
+		int backfill_idle=0; // count of unclaimed backfill slots
 
-		int update(const char * state);
+		int update(const char * state, bool backfill_slot);
 };
 
 
@@ -135,24 +134,23 @@ class StartdServerTotal : public ClassTotal
 class StartdStateTotal : public ClassTotal
 {
 	public:
-		StartdStateTotal();
+		StartdStateTotal() : ClassTotal(PP_STARTD_STATE) {};
 		virtual int update (ClassAd *, int options);
 		virtual void displayHeader(FILE*);
 		virtual void displayInfo(FILE*,int);
 
   	protected:
-		int machines;
-		int owner;
-		int unclaimed;
-		int claimed;
-		int preempt;
-		int matched;
-#if HAVE_BACKFILL
-		int backfill;
-#endif
-		int drained;
+		int machines=0;
+		int owner=0;
+		int unclaimed=0;
+		int claimed=0;
+		int preempt=0;
+		int matched=0;
+		int drained=0;
+		int backfill=0;
+		int backfill_idle=0; // count of unclaimed backfill slots
 
-		int update(const char * state);
+		int update(const char * state, bool backfill_slot);
 };
 
 

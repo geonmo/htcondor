@@ -36,6 +36,7 @@
 #include <sys/stat.h>
 #endif
 #include "match_prefix.h"
+#include "MapFile.h"
 
 #include "directory.h"
 #include "filename_tools.h"
@@ -606,7 +607,7 @@ int NewProcFromAd(FILE * out, const classad::ClassAd * ad, int ProcId, JobFactor
 	// already been materialized.
 	classad::References clusterAttrs;
 	if (ClusterAd->LookupString(ATTR_EDITED_CLUSTER_ATTRS, buffer)) {
-		StringTokenIterator it(buffer, 40, ", \t\r\n");
+		StringTokenIterator it(buffer, ", \t\r\n");
 		const std::string * attr;
 		while ((attr = it.next_string())) { clusterAttrs.insert(*attr); }
 	}
@@ -947,6 +948,7 @@ main( int argc, const char *argv[] )
 	}
 
 	JobFactory * factory = new JobFactory(digest_file, cluster_id);
+	MapFile* protected_url_map = getProtectedURLMap();
 
 	StringList items;
 	if (items_file) {
@@ -1015,6 +1017,7 @@ main( int argc, const char *argv[] )
 		// fprintf(out, "Dry-Run job(s)");
 	}
 
+	factory->attachTransferMap(protected_url_map);
 	// ok, factory initialized, now materialize them jobs
 	int num_jobs = 0;
 	for (;;) {
@@ -1044,6 +1047,12 @@ main( int argc, const char *argv[] )
 
 	if (free_out && out) {
 		fclose(out); out = NULL;
+	}
+	factory->detachTransferMap();
+
+	if (protected_url_map) {
+		delete protected_url_map;
+		protected_url_map = nullptr;
 	}
 
 	delete factory;

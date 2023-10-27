@@ -35,6 +35,9 @@
 class VolumeManager;
 #endif // LINUX
 
+#define USE_STARTD_LATCHES 1
+#define DO_BULK_COLLECTOR_UPDATES 1
+
 class SlotType
 {
 public:
@@ -44,9 +47,9 @@ public:
 	const char * Shares() { return shares.empty() ? NULL : shares.c_str(); }
 
 	static const char * type_param(CpuAttributes* p_attr, const char * name);
-	static const char * type_param(int type_id, const char * name);
+	static const char * type_param(unsigned int type_id, const char * name);
 	static bool type_param_boolean(CpuAttributes* p_attr, const char * name, bool def_value);
-	static bool type_param_boolean(int type_id, const char * name, bool def_value);
+	static bool type_param_boolean(unsigned int type_id, const char * name, bool def_value);
 	static long long type_param_long(CpuAttributes* p_attr, const char * name, long long def_value);
 	static char * param(CpuAttributes* p_attr, const char * name);
 	static const char * param(std::string& out, CpuAttributes* p_attr, const char * name);
@@ -59,6 +62,36 @@ private:
 	static bool insert_param(void*, HASHITER & it);
 	void clear() { shares.clear(); params.clear(); }
 };
+
+#ifdef USE_STARTD_LATCHES
+class AttrLatch
+{
+public:
+	AttrLatch() = default;
+	AttrLatch(const char * name) : attr(name) {}
+
+	bool operator<(const AttrLatch& that) const {
+		return strcasecmp(this->attr.c_str(), that.attr.c_str()) < 0;
+	}
+
+	const char * repl(std::string & buf) const {
+		formatstr_cat(buf, "%s:%d%d,%lld,%lld", attr.c_str(), is_defined, publish_last_value, (long long)last_value, (long long)change_time);
+		return buf.c_str();
+	}
+
+	std::string attr;
+	time_t      change_time=0;
+	int64_t     last_value=0;
+	bool        is_defined=false;
+	bool        publish_last_value=false;
+};
+
+struct AttrLatchLTStr {
+	inline bool operator( )( const AttrLatch &al, const AttrLatch &bl ) const {
+		return strcasecmp(al.attr.c_str(), bl.attr.c_str()) < 0;
+	}
+};
+#endif
 
 class Resource : public Service
 {
@@ -73,15 +106,10 @@ public:
 
 		// Public methods that can be called from command handlers
 	int		retire_claim( bool reversible=false );	// Gracefully finish job and release claim
-	void	void_retire_claim( ) { (void)retire_claim(false); }
-	void	void_retire_claim( bool reversible ) { (void)retire_claim(reversible); }
 	int		release_claim( void );	// Send softkill to starter; release claim
-	void	void_release_claim( void ) { (void)release_claim(); }
 	int		kill_claim( void );		// Quickly kill starter and release claim
-	void	void_kill_claim( void ) { (void)kill_claim(); }
 	int		got_alive( void );		// You got a keep alive command
 	int 	periodic_checkpoint( void );	// Do a periodic checkpoint
-	void	void_periodic_checkpoint( void ) { (void)periodic_checkpoint(); }
 	int 	suspend_claim(); // suspend the claim
 	int 	continue_claim(); // continue the claim
 
@@ -112,13 +140,10 @@ public:
 		// Shutdown methods that deal w/ opportunistic *and* COD claims
 		// reversible: if true, claim may unretire
 	void	shutdownAllClaims( bool graceful, bool reversible=false );
-	void	releaseAllClaims( void );
-	void	releaseAllClaimsReversibly( void );
-	void	killAllClaims( void );
 
 	void	dropAdInLogFile( void );
 
-        void	setBadputCausedByDraining();
+	void	setBadputCausedByDraining() { if (r_cur) r_cur->setBadputCausedByDraining(); }
         bool	getBadputCausedByDraining() { return r_cur->getBadputCausedByDraining();}
 
         void	setBadputCausedByPreemption() { if( r_cur ) r_cur->setBadputCausedByPreemption();}
@@ -136,6 +161,10 @@ public:
 	void	change_state( State s , Activity a ) {r_state->change(s, a);};
 	State		state( void ) const    {return r_state->state();};
 	Activity	activity( void ) const {return r_state->activity();};
+
+	// called by ResState when the state or activity changes in a notable way
+	// this gives us a chance to refresh the slot classad and possibly trigger a collector update
+	void state_or_activity_changed(time_t now, bool state_changed, bool activity_changed);
 
 	// refresh ad and evaluate state change policy
 	void	eval_state(void);
@@ -167,32 +196,30 @@ public:
 	void	compute_shared() {
 		r_attr->compute_virt_mem();
 	}
-	// called by resmgr::compute()  and by main_init()
-	void	compute_evaluated() {
-		// Evaluate the CpuBusy expression and compute CpuBusyTime
-		// and CpuIsBusy.
-		compute_cpu_busy();
-	}
+	// called by resmgr::compute_and_refresh(rip) and by resmgr::compute_dynamic()
+	// always called after refresh_classad_dynamic()
+	void	compute_evaluated();
+
 	void    display_total_disk() {
 		dprintf(D_FULLDEBUG, "Total execute space: %llu\n", r_attr->get_total_disk());
 	}
 
 	void	publish_static(ClassAd* ad);
-	void	publish_dynamic(ClassAd* ad, bool for_update);
+	void	publish_dynamic(ClassAd* ad);
 			// publish to internal classad
-	void	publish_dynamic() { publish_dynamic(r_classad, false); }
+	void	refresh_classad_dynamic() { publish_dynamic(r_classad); }
 
 	void	refresh_sandbox_ad(ClassAd* ad);
 
 	// publish a full ad for update or writing to disk etc
 	// do NOT pass r_classad into this function!!
 	typedef enum _purpose { for_update, for_req_claim, for_cod, for_workfetch, for_query, for_snap } Purpose;
-	void    publish_single_slot_ad(ClassAd & ad, time_t cur_time, Purpose perp);
+	void    publish_single_slot_ad(ClassAd & ad, time_t last_heard_from, Purpose perp);
 
 	void    publish_private( ClassAd *ad );
-    void	publishDeathTime( ClassAd* cap );
-	void	publishSlotAttrs( ClassAd* cap, bool as_literal, bool only_valid_values = true );
+	void	publish_SlotAttrs( ClassAd* cap, bool as_literal, bool only_valid_values = true );
 	void	publishDynamicChildSummaries( ClassAd *cap);
+	void	publish_evaluated(ClassAd * cap);
 
 	struct ResourceLess {
 		bool operator()(Resource *lhs, Resource *rhs) const {
@@ -205,17 +232,24 @@ public:
 	}
 
 		// Load Average related methods
-	float	condor_load( void ) {return r_attr->condor_load();};
-	float	compute_condor_usage( void );
-	float	owner_load( void ) {return r_attr->owner_load();};
-	void	set_owner_load( float val ) {r_attr->set_owner_load(val);};
+	double	condor_load( void ) {return r_attr->condor_load();};
+	double	compute_condor_usage( void );
+	double	owner_load( void ) {return r_attr->owner_load();};
+	void	set_owner_load( double val ) {r_attr->set_owner_load(val);};
+#ifdef USE_STARTD_LATCHES  // more generic mechanism for CpuBusy
+	std::vector<AttrLatch> latches;
+	void init_latches();
+	void reconfig_latches();
+	void evaluate_latches();
+	void publish_latches(ClassAd* cap, time_t now);
+	void dump_latches(int dpf_level);
+#else
 	void	compute_cpu_busy( void );
-	time_t	cpu_busy_time( void );
+	time_t	cpu_busy_time(time_t now);
+#endif
 
-	void	display_load(amask_t how_much) {
-		// for updates, we want to log this on normal, all other times, we log at VERBOSE 
-		r_attr->display(IS_UPDATE(how_much) ? 0 : D_VERBOSE);
-	}
+	void	display_load() { r_attr->display(0); }
+	void	display_load_as_D_VERBOSE() { r_attr->display(D_VERBOSE); }
 
 		// dprintf() functions add the CPU id to the header of each
 		// message for SMP startds (single CPU machines get no special
@@ -263,22 +297,22 @@ public:
 	void	leave_preempting_state( void );
 
 		// Methods to initialize and refresh the resource classads.
-	void	init_classad( void );
+	void	init_classad();
 
-	#if 0 // not curently used
-	void	refresh_classad_static() {
-		if (r_config_classad) this->publish_static(r_config_classad);
+	// called when the resource bag of a slot has changed (p-slot or coalesced slot)
+	void	refresh_classad_resources() {
+		if (r_classad) {
+			// Put in cpu-specific attributes (A_STATIC, A_UPDATE, A_TIMEOUT)
+			r_attr->publish_static(r_config_classad);
+			r_attr->publish_dynamic(r_classad);
+		}
 	}
-	#endif
 
-	void	refresh_classad_for_update() { // low freqency refresh, used only by ResMgr::compute_dynamic
-		if (r_classad) this->publish_dynamic(r_classad, true);
+	// publish result of compute_evaluated into the internal ad
+	void	refresh_classad_evaluated() {
+		if (r_classad) publish_evaluated(r_classad);
 	}
-	void	refresh_classad_for_policy() { // high frequency refresh, used only by ResMgr::compute_dynamic
-		if (r_classad) this->publish_dynamic(r_classad, false);
-	}
-	void	refresh_classad_resources(); // called when the resource bag of a slot has changed (p-slot or coalesced slot)
-	void	refresh_classad_evaluated();
+
 	void	refresh_classad_slot_attrs(); // refresh cross-slot attrs into r_classad
 	void	refresh_draining_attrs();    // specialized refresh for changes caused by draining
 	void	refresh_startd_cron_attrs(); // got startd cron updates, refresh now
@@ -286,7 +320,7 @@ public:
 	void	publish_slot_config_overrides(ClassAd * cad);
 
 	typedef enum _whyfor {
-		wf_timer,          //0
+		wf_doUpdate,       //0	 the regular periodic update
 		wf_stateChange,    //1
 		wf_vmChange,       //2
 		wf_hiberChange,    //3
@@ -298,16 +332,15 @@ public:
 		wf_refreshRes,     //9
 	} WhyFor;
 	void	update_needed( WhyFor why );// Schedule to update the central manager.
-	void	update_walk_for_timer() { update_needed(wf_timer); } // for use with Walk where arguments are not permitted
-	void	update_walk_for_vm_change() { update_needed(wf_vmChange); } // for use with Walk where arguments are not permitted
-	void	update_walk_for_backfill_refresh_res() {
-		if (r_backfill_slot && can_create_dslot()) {
-			update_needed(wf_refreshRes);
-		}
-	}
-	void	do_update( void );			// Actually update the CM
+	void	update_walk_for_timer() { update_needed(wf_doUpdate); } // for use with Walk where arguments are not permitted
+#ifdef DO_BULK_COLLECTOR_UPDATES
+	void	get_update_ads(ClassAd & public_ad, ClassAd & private_ad);
+	unsigned int update_is_needed() { return r_update_is_for; }
+#else
+	void	do_update( int timerID = -1 );			// Actually update the CM
+#endif
 	void    process_update_ad(ClassAd & ad, int snapshot=0); // change the update ad before we send it 
-    int     update_with_ack( void );    // Actually update the CM and wait for an ACK
+    int     update_with_ack( void );    // Actually update the CM and wait for an ACK, used when hibernating.
 	void	final_update( void );		// Send a final update to the CM
 									    // with Requirements = False.
 
@@ -326,9 +359,12 @@ public:
 	int		eval_continue( void );		// EXCEPT's on undefined
 	int		eval_is_owner( void );		// EXCEPT's on undefined
 	int		eval_start( void );			// returns -1 on undefined
+#ifdef USE_STARTD_LATCHES  // more generic mechanism for CpuBusy
+#else
 	int		eval_cpu_busy( void );		// returns FALSE on undefined
+#endif
 	bool	willingToRun( ClassAd* request_ad );
-	float	compute_rank( ClassAd* req_classad );
+	double	compute_rank( ClassAd* req_classad );
 
 #if HAVE_BACKFILL
 	int		eval_start_backfill( void ); 
@@ -340,8 +376,8 @@ public:
 
 #if HAVE_JOB_HOOKS
 	bool	isCurrentlyFetching( void ) { return m_currently_fetching; }
-	void	tryFetchWork( void );
-	void	createOrUpdateFetchClaim( ClassAd* job_ad, float rank = 0 );
+	void	tryFetchWork( int timerID = -1 );
+	void	createOrUpdateFetchClaim( ClassAd* job_ad, double rank = 0 );
 	bool	spawnFetchedWork( void );
 	void	terminateFetchedWork( void );
 	void	startedFetch( void );
@@ -384,6 +420,9 @@ public:
     typedef std::set<Claim*, claimset_less> claims_t;
     claims_t        r_claims;
     bool            r_has_cp;
+	bool            r_backfill_slot;
+	bool            r_suspended_by_command;	// true when the claim was suspended by a SUSPEND_CLAIM command
+	bool            r_no_collector_updates; // true for HIDDEN slots
 
 	CODMgr*			r_cod_mgr;	// Object to manage COD claims
 	Reqexp*			r_reqexp;   // Object for the requirements expression
@@ -393,12 +432,8 @@ public:
 	int				r_id;		// CPU id of this resource (int form)
 	int				r_sub_id;	// Sub id of this resource (int form)
 	char*			r_id_str;	// CPU id of this resource (string form)
-	int             prevLHF;
-	bool			r_backfill_slot;
-	bool 			m_bUserSuspended;
-	bool			r_no_collector_updates;
 
-	int				type( void ) { return r_attr->type(); };
+	unsigned int type_id( void ) { return r_attr->type_id(); };
 
 	char const *executeDir() { return r_attr->executeDir(); }
 
@@ -423,7 +458,8 @@ public:
 	bool can_create_dslot() const { return is_partitionable_slot(); } // for now, only p-slots are splitable
 
 	void set_parent( Resource* rip );
-    Resource* get_parent() { return m_parent; }
+	Resource* get_parent() { return m_parent; }
+	void clear_parent(); // disconnect from parent (called on deletion of dynamic slots)
 
 	std::string makeChildClaimIds();
 	void add_dynamic_child(Resource *rip) { m_children.insert(rip); }
@@ -453,19 +489,30 @@ private:
 
 	IdDispenser* m_id_dispenser;
 
+#ifdef DO_BULK_COLLECTOR_UPDATES
+	// bulk updates use a single timer in the ResMgr for updates
+	// and a timestamp of the oldest requested time for the update
+	// along with a bitmask of the reason for the update
+	time_t r_update_is_due = 0;		// 0 for update is not due, otherwise the oldest time it was requested
+	unsigned int r_update_is_for = 0; // mask of WhyFor bits giving reason for update
+#else
 	int			update_tid;	// DaemonCore timer id for update delay
+#endif
 
+#ifdef USE_STARTD_LATCHES  // more generic mechanism for CpuBusy
+#else
 	int		r_cpu_busy;
-	time_t	r_cpu_busy_start_time;
+	time_t	r_cpu_busy_start_time; // time when cpu changed from busy to non-busy or visa versa
+#endif
 	time_t	r_last_compute_condor_load;
 	bool	r_suspended_for_cod;
 	bool	r_hack_load_for_cod;
 	int		r_cod_load_hack_tid;
 	void	beginCODLoadHack( void );
-	float	r_pre_cod_total_load;
-	float	r_pre_cod_condor_load;
-	void 	startTimerToEndCODLoadHack( void );
-	void	endCODLoadHack( void );
+	double	r_pre_cod_total_load;
+	double	r_pre_cod_condor_load;
+	void 	startTimerToEndCODLoadHack();
+	void	endCODLoadHack( int timerID = -1 );
 	int		eval_expr( const char* expr_name, bool fatal, bool check_vanilla );
 
 	std::string m_execute_dir;
@@ -478,7 +525,7 @@ private:
 	int		m_next_fetch_work_delay;
 	int		m_next_fetch_work_tid;
 	int		evalNextFetchWorkDelay( void );
-	void	createFetchClaim( ClassAd* job_ad, float rank = 0 );
+	void	createFetchClaim( ClassAd* job_ad, double rank = 0 );
 	void	resetFetchWorkTimer( int next_fetch = 0 );
 	char*	m_hook_keyword;
 	bool	m_hook_keyword_initialized;
@@ -502,10 +549,6 @@ Arguments
 
 - req_classad - Input: The ClassAd for the job to run
 
-- leftover_claim - Output: If a partitionable slot was carved up,
-  this will hold the claim to the leftovers.  Otherwise, it will be
-  unchanged.
-
 Return
 
 Returns the Resource the job will actually be running on.  It does not need to
@@ -520,6 +563,6 @@ only if rip->can_create_dslot() is true.
 
 The job may be rejected, in which case the returned Resource will be null.
 */
-Resource * create_dslot(Resource * rip, ClassAd * req_classad, Claim* &leftover_claim);
+Resource * create_dslot(Resource * rip, ClassAd * req_classad);
 
 #endif /* _STARTD_RESOURCE_H */

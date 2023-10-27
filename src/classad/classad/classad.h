@@ -282,11 +282,26 @@ class ClassAd : public ExprTree
 		//@{
 		/** Finds the expression bound to an attribute name.  The lookup only
 				involves this ClassAd; scoping information is ignored.
-			@param attrName The name of the attribute.  
+			@param attrName The name of the attribute. char *, or std::string   
 			@return The expression bound to the name in the ClassAd, or NULL
 				otherwise.
 		*/
-		ExprTree *Lookup( const std::string &attrName ) const;
+		template<typename StringLikeThing>
+		ExprTree * Lookup( const StringLikeThing &name ) const {
+			ExprTree *tree;
+			AttrList::const_iterator itr;
+
+			itr = attrList.find( name );
+			if (itr != attrList.end()) {
+				tree = itr->second;
+			} else if (chained_parent_ad != NULL) {
+				tree = chained_parent_ad->Lookup(name);
+			} else {
+				tree = NULL;
+			}
+			return tree;
+		}
+
 		ExprTree* LookupExpr(const std::string &name) const
 		{ return Lookup( name ); }
 
@@ -387,7 +402,7 @@ class ClassAd : public ExprTree
 			@param attrName The name of the attribute in the ClassAd.
 			@param result The result of the evaluation.
 		*/
-		bool EvaluateAttr( const std::string& attrName, Value &result ) const;
+		bool EvaluateAttr( const std::string& attrName, Value &result, Value::ValueType mask=Value::ValueType::SAFE_VALUES ) const;
 
 		/** Evaluates an expression.
 			@param buf Buffer containing the external representation of the
@@ -404,7 +419,7 @@ class ClassAd : public ExprTree
 			@param expr The expression to be evaluated.
 			@param result The result of the evaluation.
 		*/
-		bool EvaluateExpr( const ExprTree* expr, Value &result ) const;	// eval'n
+		bool EvaluateExpr( const ExprTree* expr, Value &result, Value::ValueType mask=Value::ValueType::SAFE_VALUES ) const;
 
 		/** Evaluates an expression, and returns the significant subexpressions
 				encountered during the evaluation.  If the expression doesn't 
@@ -829,7 +844,6 @@ class ClassAd : public ExprTree
 		friend 	class AttributeReference;
 		friend 	class ExprTree;
 		friend 	class EvalState;
-		friend 	class ClassAdIterator;
 
 
 		bool _GetExternalReferences( const ExprTree *, const ClassAd *, 
@@ -859,7 +873,5 @@ class ClassAd : public ExprTree
 };
 
 } // classad
-
-#include "classad/classadItor.h"
 
 #endif//__CLASSAD_CLASSAD_H__

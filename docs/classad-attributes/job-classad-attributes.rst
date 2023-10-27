@@ -23,7 +23,7 @@ all attributes.
     the
     **accounting_group** :index:`accounting_group<single: accounting_group; submit commands>`
     command. This attribute is only present if an accounting group was
-    requested by the submission. See the :doc:`/admin-manual/user-priorities-negotiation` section
+    requested by the submission. See the :doc:`/admin-manual/cm-configuration` section
     for more information about accounting groups.
 
 :classad-attribute:`AcctGroupUser`
@@ -160,15 +160,8 @@ all attributes.
 :classad-attribute:`BlockWrites`
     The integer number of blocks written to disk for this job.
 
-:classad-attribute:`CkptArch`
-    String describing the architecture of the machine this job executed
-    on at the time it last produced a checkpoint. If the job has never
-    produced a checkpoint, this attribute is ``undefined``.
-
-:classad-attribute:`CkptOpSys`
-    String describing the operating system of the machine this job
-    executed on at the time it last produced a checkpoint. If the job
-    has never produced a checkpoint, this attribute is ``undefined``.
+:classad-attribute:`CheckpointDestination`
+    A URL, as defined by submit command **checkpoint_destination**.
 
 :classad-attribute:`CloudLabelNames`
     Used for grid type gce jobs; a string taken from the definition of
@@ -189,7 +182,7 @@ all attributes.
 :classad-attribute:`CommittedTime`
     The number of seconds of wall clock time that the job has been
     allocated a machine, excluding the time spent on run attempts that
-    were evicted without a checkpoint. Like ``RemoteWallClockTime``,
+    were evicted. Like ``RemoteWallClockTime``,
     this includes time the job spent in a suspended state, so the total
     committed wall time spent running is
 
@@ -207,9 +200,8 @@ all attributes.
 
 :classad-attribute:`CommittedSuspensionTime`
     A running total of the number of seconds the job has spent in
-    suspension during time in which the job was not evicted without a
-    checkpoint. This number is updated when the job is checkpointed and
-    when it exits.
+    suspension during time in which the job was not evicted.
+    This number is updated when the job exits.
 
 :classad-attribute:`CompletionDate`
     The time when the job completed, or undefined if the job has not
@@ -281,7 +273,6 @@ all attributes.
 
           -append +DAGParentNodeNames="B,C"
 
-
 :classad-attribute:`DAGManNodesLog`
     For a DAGMan node job only, gives the path to an event log used
     exclusively by DAGMan to monitor the state of the DAG's jobs. Events
@@ -316,6 +307,11 @@ all attributes.
     ``DAGManNodesMask`` does not affect events recorded in the job event
     log file referred to by ``UserLog``.
 
+:classad-attribute:`DAGManNodeRetry`
+    For a DAGMan node job only, the current retry attempt number for the node
+    that this job belongs. This attribute is only included if specified by
+    :macro:`DAGMAN_NODE_RECORD_INFO` configuration option.
+
 :classad-attribute:`DeferralPrepTime`
     An integer representing the number of seconds before the jobs ``DeferralTime``
     to which the job may be matched with a machine.
@@ -341,8 +337,7 @@ all attributes.
     proxy. This setting currently only applies to proxies delegated for
     non-grid jobs and HTCondor-C jobs.
     This setting has no effect if the configuration setting
-    ``DELEGATE_JOB_GSI_CREDENTIALS``
-    :index:`DELEGATE_JOB_GSI_CREDENTIALS` is false, because in
+    :macro:`DELEGATE_JOB_GSI_CREDENTIALS` is false, because in
     that case the job proxy is copied rather than delegated.
 
 :classad-attribute:`DiskUsage`
@@ -635,6 +630,11 @@ all attributes.
     It specifies the target grid type, plus additional parameters
     specific to the grid type.
 
+:classad-attribute:`GridResourceUnavailableTime`
+    Time at which the remote job management system became unavailable.
+    Measured in the number of seconds since the epoch (00:00:00 UTC,
+    Jan 1, 1970).
+
 :classad-attribute:`HoldKillSig`
     Currently only for scheduler and local universe jobs, a string
     containing a name of a signal to be sent to the job if the job is
@@ -696,12 +696,13 @@ all attributes.
     |                                  | encountered when                    |                          |
     |                                  | transferring files.                 |                          |
     +----------------------------------+-------------------------------------+--------------------------+
-    | | 12                             | An error occurred while             | The Unix errno number.   |
-    | | [TransferOutputError]          | transferring job output files       |                          |
-    |                                  | or checkpoint files.                |                          |
+    | | 12                             | An error occurred while             | The Unix errno number,   |
+    | | [TransferOutputError]          | transferring job output files       | or a plug-in error       |
+    |                                  | or self-checkpoint files.           | number; see below.       |
     +----------------------------------+-------------------------------------+--------------------------+
-    | | 13                             | An error occurred while             | The Unix errno number.   |
-    | | [TransferInputError]           | transferring job input files.       |                          |
+    | | 13                             | An error occurred while             | The Unix errno number,   |
+    | | [TransferInputError]           | transferring job input files.       | or a plug-in error       |
+    |                                  |                                     | number; see below.       |
     +----------------------------------+-------------------------------------+--------------------------+
     | | 14                             | The initial working                 | The Unix errno number.   |
     | | [IwdError]                     | directory of the job                |                          |
@@ -725,9 +726,8 @@ all attributes.
     |                                  | encountered when                    |                          |
     |                                  | transferring files.                 |                          |
     +----------------------------------+-------------------------------------+--------------------------+
-    | | 19                             | ``<Keyword>_HOOK_PREPARE_JOB``      |                          |
-    | | [HookPrepareJobFailure]        | :index:`<Keyword>_HOOK_PREPARE_JOB` |                          |
-    |                                  | was defined but could               |                          |
+    | | 19                             | :macro:`<Keyword>_HOOK_PREPARE_JOB` |                          |
+    | | [HookPrepareJobFailure]        | was defined but could               |                          |
     |                                  | not be executed or                  |                          |
     |                                  | returned failure.                   |                          |
     +----------------------------------+-------------------------------------+--------------------------+
@@ -737,8 +737,7 @@ all attributes.
     |                                  | run.                                |                          |
     +----------------------------------+-------------------------------------+--------------------------+
     | | 21                             | The job was put on hold             |                          |
-    | | [StartdHeldJob]                | because ``WANT_HOLD``               |                          |
-    |                                  | :index:`WANT_HOLD`                  |                          |
+    | | [StartdHeldJob]                | because :macro:`WANT_HOLD`          |                          |
     |                                  | in the machine policy               |                          |
     |                                  | was true.                           |                          |
     +----------------------------------+-------------------------------------+--------------------------+
@@ -754,9 +753,8 @@ all attributes.
     | | 25                             | Invalid cron settings.              |                          |
     | | [InvalidCronSettings]          |                                     |                          |
     +----------------------------------+-------------------------------------+--------------------------+
-    | | 26                             | ``SYSTEM_PERIODIC_HOLD``            |                          |
-    | | [SystemPolicy]                 | :index:`SYSTEM_PERIODIC_HOLD`       |                          |
-    |                                  | evaluated to true.                  |                          |
+    | | 26                             | :macro:`SYSTEM_PERIODIC_HOLD`       |                          |
+    | | [SystemPolicy]                 | evaluated to true.                  |                          |
     +----------------------------------+-------------------------------------+--------------------------+
     | | 27                             | The system periodic job             |                          |
     | | [SystemPolicyUndefined]        | policy evaluated to                 |                          |
@@ -765,14 +763,12 @@ all attributes.
     | | 32                             | The maximum total input             |                          |
     | | [MaxTransferInputSizeExceeded] | file transfer size was              |                          |
     |                                  | exceeded. (See                      |                          |
-    |                                  | ``MAX_TRANSFER_INPUT_MB``           |                          |
-    |                                  | :index:`MAX_TRANSFER_INPUT_MB`      |                          |
+    |                                  | :macro:`MAX_TRANSFER_INPUT_MB`      |                          |
     +----------------------------------+-------------------------------------+--------------------------+
     | | 33                             | The maximum total output            |                          |
     | | [MaxTransferOutputSizeExceeded]| file transfer size was              |                          |
     |                                  | exceeded. (See                      |                          |
-    |                                  | ``MAX_TRANSFER_OUTPUT_MB``          |                          |
-    |                                  | :index:`MAX_TRANSFER_OUTPUT_MB`     |                          |
+    |                                  | :macro:`MAX_TRANSFER_OUTPUT_MB`     |                          |
     +----------------------------------+-------------------------------------+--------------------------+
     | | 34                             | Memory usage exceeds a              |                          |
     | | [JobOutOfResources]            | memory limit.                       |                          |
@@ -886,9 +882,19 @@ all attributes.
     | | [JobDurationExceeded]          | exceeded.                           |                          |
     +----------------------------------+-------------------------------------+--------------------------+
     | | 47                             | The job's allowed execution time    |                          |
-    | | [JobExecutionTimeExceeded]     | was exceeded.                       |                          |
+    | | [JobExecuteExceeded]           | was exceeded.                       |                          |
+    +----------------------------------+-------------------------------------+--------------------------+
+    | | 48                             | Prepare job shadow hook failed      |                          |
+    | | [HookShadowPrepareJobFailure]  | when it was executed;               |                          |
+    |                                  | status code indicated job should be |                          |
+    |                                  | held.                               |                          |
     +----------------------------------+-------------------------------------+--------------------------+
 
+    Note for hold codes 12 [TransferOutputError] and 13 [TransferInputError]:
+    file transfer may invoke file-transfer plug-ins.  If it does, the hold
+    subcodes may additionally be 62 (ETIME), if the file-transfer plug-in
+    timed out; or the exit code of the plug-in shifted left by eight bits,
+    otherwise.
 
 :classad-attribute:`HoldReasonSubCode`
     An integer value that represents further information to go along
@@ -902,10 +908,8 @@ all attributes.
 :classad-attribute:`ImageSize`
     Maximum observed memory image size (i.e. virtual memory) of the job
     in KiB. The initial value is equal to the size of the executable for
-    non-vm universe jobs, and 0 for vm universe jobs. When the job
-    writes a checkpoint, the ``ImageSize`` attribute is set to the size
-    of the checkpoint file (since the checkpoint file contains the job's
-    memory image). A vanilla universe job's ``ImageSize`` is recomputed
+    non-vm universe jobs, and 0 for vm universe jobs.
+    A vanilla universe job's ``ImageSize`` is recomputed
     internally every 15 seconds. How quickly this updated information
     becomes visible to *condor_q* is controlled by
     ``SHADOW_QUEUE_UPDATE_INTERVAL`` and ``STARTER_UPDATE_INTERVAL``.
@@ -922,7 +926,7 @@ all attributes.
 
 :classad-attribute:`IwdFlushNFSCache`
     A boolean expression that controls whether or not HTCondor attempts
-    to flush a submit machine's NFS cache, in order to refresh an
+    to flush a access point's NFS cache, in order to refresh an
     HTCondor job's initial working directory. The value will be
     ``True``, unless a job explicitly adds this attribute, setting it to
     ``False``.
@@ -1267,10 +1271,6 @@ all attributes.
     A string that identifies the NT domain under which a job's owner
     authenticates on a platform running Windows.
 
-:classad-attribute:`NumCkpts`
-    A count of the number of checkpoints written by this job during its
-    lifetime.
-    
 :classad-attribute:`NumHolds`
     An integer value that will increment every time a job is placed on hold.
     It may be undefined until the job has been held at least once.
@@ -1307,7 +1307,7 @@ all attributes.
     *condor_schedd* restart. This attribute is only defined for jobs
     that can reconnected: those in the **vanilla** and **java**
     universes.
-    
+
 :classad-attribute:`NumJobStarts`
     An integer count of the number of times the job started executing.
 
@@ -1316,7 +1316,8 @@ all attributes.
 
 :classad-attribute:`NumRestarts`
     A count of the number of restarts from a checkpoint attempted by
-    this job during its lifetime.
+    this job during its lifetime.  Currently updated only for VM
+    universe jobs.
 
 :classad-attribute:`NumShadowExceptions`
     An integer count of the number of times the *condor_shadow* daemon
@@ -1618,7 +1619,7 @@ all attributes.
 :classad-attribute:`RemoteSysCpu`
     The total number of seconds of system CPU time (the time spent at
     system calls) the job used on remote machines. This does not count
-    time spent on run attempts that were evicted without a checkpoint.
+    time spent on run attempts that were evicted.
 
 :classad-attribute:`CumulativeRemoteSysCpu`
     The total number of seconds of system CPU time the job used on
@@ -1627,7 +1628,7 @@ all attributes.
 :classad-attribute:`RemoteUserCpu`
     The total number of seconds of user CPU time the job used on remote
     machines. This does not count time spent on run attempts that were
-    evicted without a checkpoint. A job in the virtual machine universe
+    evicted. A job in the virtual machine universe
     will only report this attribute if run on a KVM hypervisor.
 
 :classad-attribute:`CumulativeRemoteUserCpu`
@@ -1646,7 +1647,7 @@ all attributes.
     Note that this number does not get reset to zero when a job is
     forced to migrate from one machine to another. ``CommittedTime``, on
     the other hand, is just like ``RemoteWallClockTime`` except it does
-    get reset to 0 whenever the job is evicted without a checkpoint.
+    get reset to 0 whenever the job is evicted.
 
 :classad-attribute:`LastRemoteWallClockTime`
     Number of seconds the job was allocated a machine for its most recent completed
@@ -1702,7 +1703,7 @@ all attributes.
     true, this job is eligible to run on that slot.  If the job
     requirements does not mention the (startd) attribute ``OPSYS``,
     the schedd will append a clause to Requirements forcing the job to
-    match the same ``OPSYS`` as the submit machine. :index:`OPSYS`
+    match the same ``OPSYS`` as the access point. :index:`OPSYS`
     The schedd appends a simliar clause to match the ``ARCH``. :index:`ARCH`
     The schedd parameter ``APPEND_REQUIREMENTS``, will, if set, append that
     value to every job's requirements expression.
@@ -1748,7 +1749,7 @@ all attributes.
 :classad-attribute:`StreamErr`
     An attribute utilized only for grid universe jobs. The default value
     is ``True``. If ``True``, and ``TransferErr`` is ``True``, then
-    standard error is streamed back to the submit machine, instead of
+    standard error is streamed back to the access point, instead of
     doing the transfer (as a whole) after the job completes. If
     ``False``, then standard error is transferred back to the submit
     machine (as a whole) after the job completes. If ``TransferErr`` is
@@ -1757,9 +1758,9 @@ all attributes.
 :classad-attribute:`StreamOut`
     An attribute utilized only for grid universe jobs. The default value
     is ``True``. If ``True``, and ``TransferOut`` is ``True``, then job
-    output is streamed back to the submit machine, instead of doing the
+    output is streamed back to the access point, instead of doing the
     transfer (as a whole) after the job completes. If ``False``, then
-    job output is transferred back to the submit machine (as a whole)
+    job output is transferred back to the access point (as a whole)
     after the job completes. If ``TransferOut`` is ``False``, then this
     job attribute is ignored.
 
@@ -1841,12 +1842,12 @@ all attributes.
 
 :classad-attribute:`TotalSuspensions`
     A count of the number of times this job has been suspended during
-    its lifetime. 
-    
+    its lifetime.
+
 :classad-attribute:`TransferCheckpoint`
     A string attribute containing a comma separated list of directories
     and/or files that should be transferred from the execute machine to the
-    submit machine's spool when the job successfully checkpoints.
+    access point's spool when the job successfully checkpoints.
 
 :classad-attribute:`TransferContainer`
     A boolean expresion that controls whether the HTCondor should transfer the
@@ -1855,17 +1856,17 @@ all attributes.
 :classad-attribute:`TransferErr`
     An attribute utilized only for grid universe jobs. The default value
     is ``True``. If ``True``, then the error output from the job is
-    transferred from the remote machine back to the submit machine. The
+    transferred from the remote machine back to the access point. The
     name of the file after transfer is the file referred to by job
     attribute ``Err``. If ``False``, no transfer takes place (remote to
-    submit machine), and the name of the file is the file referred to by
+    access point), and the name of the file is the file referred to by
     job attribute ``Err``.
 
 :classad-attribute:`TransferExecutable`
     An attribute utilized only for grid universe jobs. The default value
     is ``True``. If ``True``, then the job executable is transferred
-    from the submit machine to the remote machine. The name of the file
-    (on the submit machine) that is transferred is given by the job
+    from the access point to the remote machine. The name of the file
+    (on the access point) that is transferred is given by the job
     attribute ``Cmd``. If ``False``, no transfer takes place, and the
     name of the file used (on the remote machine) will be as given in
     the job attribute ``Cmd``.
@@ -1873,7 +1874,7 @@ all attributes.
 :classad-attribute:`TransferIn`
     An attribute utilized only for grid universe jobs. The default value
     is ``True``. If ``True``, then the job input is transferred from the
-    submit machine to the remote machine. The name of the file that is
+    access point to the remote machine. The name of the file that is
     transferred is given by the job attribute ``In``. If ``False``, then
     the job's input is taken from a file on the remote machine
     (pre-staged), and the name of the file is given by the job attribute
@@ -1881,7 +1882,7 @@ all attributes.
 
 :classad-attribute:`TransferInput`
     A string attribute containing a comma separated list of directories, files and/or URLs
-    that should be transferred from the submit machine to the remote machine when
+    that should be transferred from the access point to the remote machine when
     input file transfer is enabled.
 
 :classad-attribute:`TransferInFinished`
@@ -1907,18 +1908,35 @@ all attributes.
     submitted via other submission methods, such as SOAP, may not define
     this attribute. 
 
+:classad-attribute:`TransferInputStats`
+    The value of this classad attribute is a nested classad, whose values
+    contain several attributes about HTCondor-managed file transfer.
+    These refer to the transfer of the sandbox from the AP submit point
+    to the worker node, or the EP.
+
+    Each attribute name has a prefix, either "Cedar", for the HTCondor
+    built-in file transfer method, or the prefix of the file transfer
+    plugin method (such as HTTP).  For each of these types of file transfer
+    there is an attribute with that prefix whose body is "FilesCount", 
+    the number of files transfered by that method during the last
+    transfer, and "FilesCountTotal", the sum of FilesCount over all
+    execution attempts.  In addition, for container universe jobs, there
+    is a sub-attribute ```ContainerDuration```, the number of seconds
+    it took to transfer the container image (if transfered), and
+    ```ContainerDurationTotal```, the sum over all execution attempts.
+
 :classad-attribute:`TransferOut`
     An attribute utilized only for grid universe jobs. The default value
     is ``True``. If ``True``, then the output from the job is
-    transferred from the remote machine back to the submit machine. The
+    transferred from the remote machine back to the access point. The
     name of the file after transfer is the file referred to by job
     attribute ``Out``. If ``False``, no transfer takes place (remote to
-    submit machine), and the name of the file is the file referred to by
+    access point), and the name of the file is the file referred to by
     job attribute ``Out``.
 
 :classad-attribute:`TransferOutput`
     A string attribute containing a comma separated list of files and/or URLs that should be transferred
-    from the remote machine to the submit machine when output file transfer is enabled.
+    from the remote machine to the access point when output file transfer is enabled.
 
 :classad-attribute:`TransferOutFinished`
     When the job finished the most recent recent transfer of its
@@ -1929,6 +1947,11 @@ all attributes.
     If the job's most recent transfer of its output sandbox was
     queued, this attribute says when, measured in seconds from the epoch
     (00:00:00 UTC Jan 1, 1970).
+
+:classad-attribute:`TransferOutputStats`
+    The value of this classad attribute is a nested classad, whose values
+    mirror those for ```TransferInputStats```, but for the transfer
+    from the EP worker node back to the AP submit point.
 
 :classad-attribute:`TransferOutStarted`
     When the job actually started to transfer files, the most recent
@@ -1959,14 +1982,19 @@ all attributes.
     transfer plugins are invoked. A transfer plugin supplied in this will way will be used
     even if the execute node has a file transfer plugin installed that handles that URL prefix.
 
+:classad-attribute:`WantTransferPluginMethods`
+    A string value containing a comma separated list of file transfer plugin URL prefixes
+    that are needed by the job but not supplied via the ``TransferPlugins`` attribute.
+    This attribute is intended to provide a convenient way to match against jobs that need
+    a certain transfer plugin.
+
 :classad-attribute:`TransferQueued`
     A boolean value that indicates whether the job is currently waiting
     to transfer files because of limits placed by
-    ``MAX_CONCURRENT_DOWNLOADS`` :index:`MAX_CONCURRENT_DOWNLOADS`
-    or ``MAX_CONCURRENT_UPLOADS``. :index:`MAX_CONCURRENT_UPLOADS`
+    :macro:`MAX_CONCURRENT_DOWNLOADS` or :macro:`MAX_CONCURRENT_UPLOADS`.
 
 :classad-attribute:`UserLog`
-    The full path and file name on the submit machine of the log file of
+    The full path and file name on the access point of the log file of
     job events.
 
 :classad-attribute:`WantContainer`
@@ -2152,7 +2180,11 @@ information for the DAG.
     | 3                                    | the DAG has been aborted by an       |
     |                                      | ABORT-DAG-ON specification           |
     +--------------------------------------+--------------------------------------+
-	
+
+:classad-attribute:`DAG_AdUpdateTime`
+    A timestamp for when the DAGMan process last sent an update of internal
+    information to its job ad.
+
 The following job ClassAd attributes appear in the job ClassAd only for
 the *condor_dagman* job submitted under DAGMan. They represent job process
 information about the DAG. These values will reset when a DAG is run via

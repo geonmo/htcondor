@@ -23,7 +23,6 @@
 #include "condor_classad.h"
 #include "condor_debug.h"
 #include "condor_attributes.h"
-#include "MyString.h"
 #include "string_list.h"
 #include "CondorError.h"
 #include "ad_printmask.h"
@@ -103,7 +102,7 @@ public:
 			hard_value = 0;
 			bool bool_val = false;
 			classad::Value eval_result;
-			if (EvalExprTree(tree, &ad, NULL, eval_result)
+			if (EvalExprToBool(tree, &ad, NULL, eval_result)
 				&& eval_result.IsBooleanValue(bool_val)
 				&& bool_val) {
 				hard_value = 1;
@@ -197,9 +196,8 @@ int AnalyzeThisSubExpr(
 	switch(kind) {
 		case classad::ExprTree::LITERAL_NODE: {
 			classad::Value val;
-			classad::Value::NumberFactor factor;
-			((classad::Literal*)expr)->GetComponents(val, factor);
-			unparser.UnparseAux(strLabel, val, factor);
+			((classad::Literal*)expr)->GetComponents(val);
+			unparser.UnparseAux(strLabel, val);
 			if (chatty) {
 				printf("     %d:const : %s\n", kind, strLabel.c_str());
 			}
@@ -671,14 +669,6 @@ void AnalyzeRequirementsForEachTarget(
 	bool show_work = (fmt.detail_mask & detail_diagnostic) != 0;
 	const bool count_soft_matches = false; // when true, "soft" always and never show  up as counts of machines
 
-	/*
-	bool request_is_machine = false;
-	if (0 == strcmp(GetMyTypeName(*request),STARTD_ADTYPE)) {
-		//attrConstraint = ATTR_START;
-		request_is_machine = true;
-	}
-	*/
-
 	classad::ExprTree* exprReq = request->LookupExpr(attrConstraint);
 	if ( ! exprReq)
 		return;
@@ -930,7 +920,7 @@ void AnalyzeRequirementsForEachTarget(
 
 			classad::Value eval_result;
 			bool bool_val;
-			if (EvalExprTree(subs[ix].tree, request, target, eval_result) && 
+			if (EvalExprToBool(subs[ix].tree, request, target, eval_result) && 
 				eval_result.IsBooleanValue(bool_val) && 
 				bool_val) {
 				subs[ix].matches += 1;
@@ -1240,7 +1230,7 @@ int EvalThisSubExpr(int & index, classad::ExprTree* expr, ClassAd *request, Clas
 		classad::Value eval_result;
 		bool           bool_val;
 		bool matches = false;
-		if (EvalExprTree(expr, request, offer, eval_result) && eval_result.IsBooleanValue(bool_val) && bool_val) {
+		if (EvalExprToBool(expr, request, offer, eval_result) && eval_result.IsBooleanValue(bool_val) && bool_val) {
 			matches = true;
 		}
 
@@ -1389,8 +1379,7 @@ size_t AddExprTreeMemoryUse (const classad::ExprTree* expr, QuantizingAccumulato
 	switch(kind) {
 		case classad::ExprTree::LITERAL_NODE: {
 			classad::Value val;
-			classad::Value::NumberFactor factor;
-			((const classad::Literal*)expr)->GetComponents(val, factor);
+			((const classad::Literal*)expr)->GetComponents(val);
 			accum += sizeof(classad::Literal);
 			const char * s = NULL;
 			classad::ExprList * lst = NULL;

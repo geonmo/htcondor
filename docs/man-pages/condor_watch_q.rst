@@ -124,6 +124,11 @@ and how it discovers them.
     Which cluster IDs to track jobs for.
     One or more cluster ids may be passed.
 
+ **-larger-than CLUSTER_ID**
+    Track jobs for all cluster IDs greater than
+    or equal to the specified *CLUSTER_ID*.
+    Note: This option does not discover how to track jobs.
+
  **-files FILE [FILE ...]**
     Which job event log files (i.e., the ``log`` file from ``condor_submit``)
     to track jobs from.
@@ -229,10 +234,3 @@ Author
 ------
 
 Center for High Throughput Computing, University of Wisconsin-Madison
-
-Copyright
----------
-
-Copyright © 1990-2020 Center for High Throughput Computing, Computer
-Sciences Department, University of Wisconsin-Madison, Madison, WI. All
-Rights Reserved. Licensed under the Apache License, Version 2.0.
