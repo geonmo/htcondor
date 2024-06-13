@@ -140,7 +140,16 @@ JobEventLog::next() {
 		break;
 
 		case ULOG_RD_ERROR:
-			THROW_EX( HTCondorIOError, "ULOG_RD_ERROR" );
+		{
+			std::string message {"ULOG_RD_ERROR: "};
+			ReadUserLog::ErrorType et;
+			const char *estring = nullptr;
+			unsigned int lineno = 0;
+			wful.getErrorInfo(et, estring, lineno);
+			formatstr(message, "ULOG_RD_ERROR in file %s at offset %zu\n",
+					wful.getFilename().c_str(), wful.getOffset());
+			THROW_EX(HTCondorIOError, message.c_str());
+		}
 		break;
 
 		case ULOG_MISSED_EVENT:
@@ -444,8 +453,8 @@ void export_event_log() {
             R"C0ND0R(
             Reads user job event logs from ``filename``.
 
-            By default, it waits for new events, but it may be used to
-            poll for them:
+            By default, it blocks waiting for new events, but it may be
+            used to poll for them:
 
             .. code-block:: python
 
@@ -474,12 +483,20 @@ void export_event_log() {
             )C0ND0R")
 		.def("events", &JobEventLog::events,
             R"C0ND0R(
-            Return an iterator over :class:`JobEvent` objects from the filename given in the constructor.
+            Return an iterator over :class:`JobEvent` objects from the
+            filename given in the constructor.  By default, the iterator
+            blocks forever waiting for new events.
 
             :param int stop_after: After how many seconds should the iterator
                 stop waiting for new events?
+
                 If ``None`` (the default), wait forever.
-                If ``0``, never wait.
+
+                If ``0``, never wait.  Does not block.
+
+                For any other value, wait (block) for that many seconds
+                for a new event, raising :class:`StopIteration` if one
+                does not appear.  (This does not invalidate the iterator.)
             )C0ND0R",
             boost::python::args("self", "stop_after"))
 		.def("__iter__", &JobEventLog::iter, "Return self (which is its own iterator).")

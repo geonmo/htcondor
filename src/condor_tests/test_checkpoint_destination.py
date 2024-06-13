@@ -651,22 +651,22 @@ def the_job_handle(the_job_pair):
 def the_completed_job(the_condor, the_job_handle):
     # The job will evict itself part of the way through.  To avoid a long
     # delay waiting for the schedd to reschedule it, call condor_reschedule.
-    the_job_handle.wait(
-        timeout=60,
+    assert the_job_handle.wait(
+        timeout=300,
         condition=ClusterState.all_running,
         fail_condition=ClusterState.any_held,
     )
 
-    the_job_handle.wait(
-        timeout=60,
+    assert the_job_handle.wait(
+        timeout=300,
         condition=ClusterState.all_idle,
         fail_condition=ClusterState.any_held,
     )
 
     the_condor.run_command(['condor_reschedule'])
 
-    the_job_handle.wait(
-        timeout=60,
+    assert the_job_handle.wait(
+        timeout=300,
         condition=ClusterState.all_complete,
         fail_condition=ClusterState.any_held,
     )
@@ -929,7 +929,7 @@ def fail_job(the_condor, fail_job_handle):
     # This is mildly incestuous; it should be moved into an Ornithology
     # API and/or all but the last line of this function replace by
     # `fail_job_handle.wait_for_event(
-    #       of_type=EventType.SHADOW_EXCEPTION,
+    #       of_type=EventType.REMOTE_ERROR,
     #       timeout=60,
     # )`.
     last_event_read = fail_job_handle.state._last_event_read
@@ -942,7 +942,7 @@ def fail_job(the_condor, fail_job_handle):
         for event in events:
             last_event_read += 1
 
-            if event.type is JobEventType.SHADOW_EXCEPTION:
+            if event.type is JobEventType.REMOTE_ERROR:
                 found_event = True
                 break
 
@@ -1178,7 +1178,12 @@ class TestCheckpointDestination:
         # Get the CheckpointDestination and GlobalJobID from the history file.
         result = schedd.history(
             constraint=constraint,
-            projection=["CheckpointDestination", "GlobalJobID", "CheckpointNumber"],
+            projection=[
+                "CheckpointDestination",
+                "GlobalJobID",
+                "CheckpointNumber",
+                "Owner",
+            ],
             match=1,
         )
         results = [r for r in result]
@@ -1208,12 +1213,15 @@ class TestCheckpointDestination:
                 assert(not path.exists())
 
                 # Did we remove the manifest file?
-                manifest_file = test_dir / "condor" / "spool" / "checkpoint-cleanup" / f"cluster{the_removed_job.clusterid}.proc0.subproc0" / f"_condor_checkpoint_MANIFEST.{checkpointNumber}"
+                manifest_file = test_dir / "condor" / "spool" / "checkpoint-cleanup" / jobAd["Owner"] / f"cluster{the_removed_job.clusterid}.proc0.subproc0" / f"_condor_checkpoint_MANIFEST.{checkpointNumber}"
+                if manifest_file.exists():
+                    # Crass empiricism.
+                    time.sleep(20)
                 assert(not manifest_file.exists())
 
             # Once we've removed all of the manifest files, we should also
             # remove the directory we used to store them.
-            checkpoint_cleanup_subdir = test_dir / "condor" / "spool" / "checkpoint-cleanup" / f"cluster{the_removed_job.clusterid}.proc0.subproc0"
+            checkpoint_cleanup_subdir = test_dir / "condor" / "spool" / "checkpoint-cleanup" / jobAd["Owner"] / f"cluster{the_removed_job.clusterid}.proc0.subproc0"
             if checkpoint_cleanup_subdir.exists():
                 # Crass empiricism.
                 time.sleep(20)
@@ -1245,17 +1253,17 @@ class TestCheckpointDestination:
 
         shadow_exception = None
         for event in fail_job.event_log.events:
-            if event.type is JobEventType.SHADOW_EXCEPTION:
-                shadow_exception = event
+            if event.type is JobEventType.REMOTE_ERROR:
+                remote_error = event
                 break
 
-        assert shadow_exception is not None
+        assert remote_error is not None
 
         # This should be part of the test case, instead.
         if "missing_file" in fail_job_name:
-            assert "Failed to open checkpoint file" in shadow_exception["message"]
-            assert "to compute checksum" in shadow_exception["message"]
+            assert "Failed to open checkpoint file" in remote_error["ErrorMsg"]
+            assert "to compute checksum" in remote_error["ErrorMsg"]
         elif "corrupt_manifest" in fail_job_name:
-            assert "Invalid MANIFEST file, aborting" in shadow_exception["message"]
+            assert "Invalid MANIFEST file, aborting" in remote_error["ErrorMsg"]
         elif "corrupt_file" in fail_job_name:
-            assert "did not have expected checksum" in shadow_exception["message"]
+            assert "did not have expected checksum" in remote_error["ErrorMsg"]

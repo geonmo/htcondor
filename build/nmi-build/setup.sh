@@ -31,12 +31,15 @@ else
 fi
 
 if [ $ID = debian ] || [ $ID = 'ubuntu' ]; then
-    apt update
+    apt-get update
     export DEBIAN_FRONTEND='noninteractive'
-    INSTALL='apt install --yes'
-elif [ $ID = 'amzn' ] || [ $ID = 'centos' ]; then
+    INSTALL='apt-get install --yes'
+elif [ $ID = 'centos' ]; then
     INSTALL='yum install --assumeyes'
-elif [ $ID = 'almalinux' ] || [ $ID = 'fedora' ]; then
+elif [ $ID = 'opensuse-leap' ]; then
+    INSTALL='zypper --non-interactive install'
+    $INSTALL system-group-wheel system-user-mail
+elif [ $ID = 'amzn' ] || [ $ID = 'almalinux' ] || [ $ID = 'fedora' ]; then
     INSTALL='dnf install --assumeyes'
     $INSTALL 'dnf-command(config-manager)'
 fi
@@ -101,24 +104,40 @@ if [ $ID = 'fedora' ]; then
     $INSTALL "https://research.cs.wisc.edu/htcondor/repo/$REPO_VERSION/htcondor-release-current.fc$VERSION_ID.noarch.rpm"
 fi
 
+# openSUSE has a zypper command to install a repo from a URL.
+# Let's use that in the future. This works for now.
+if [ $ID = 'opensuse-leap' ]; then
+    zypper --non-interactive --no-gpg-checks install "https://research.cs.wisc.edu/htcondor/repo/$REPO_VERSION/htcondor-release-current.leap$VERSION_ID.noarch.rpm"
+    for key in /etc/pki/rpm-gpg/*; do
+        rpmkeys --import "$key"
+    done
+fi
+
 # Setup Debian based repositories
 if [ $ID = 'debian' ] || [ $ID = 'ubuntu' ]; then
-    $INSTALL apt-transport-https curl gnupg
-    curl -fsSL "https://research.cs.wisc.edu/htcondor/repo/keys/HTCondor-${REPO_VERSION}-Key" | apt-key add -
+    $INSTALL apt-transport-https apt-utils curl gnupg
+    mkdir -p /etc/apt/keyrings
+    curl -fsSL "https://research.cs.wisc.edu/htcondor/repo/keys/HTCondor-${REPO_VERSION}-Key" -o /etc/apt/keyrings/htcondor.asc
     curl -fsSL "https://research.cs.wisc.edu/htcondor/repo/$ID/htcondor-${REPO_VERSION}-${VERSION_CODENAME}.list" -o /etc/apt/sources.list.d/htcondor.list
-    apt update
+    apt-get update
 fi
 
 # Use the testing repositories for unreleased software
 if [ "$VERSION_CODENAME" = 'future' ] && [ "$ARCH" = 'x86_64' ]; then
     cp -p /etc/apt/sources.list.d/htcondor.list /etc/apt/sources.list.d/htcondor-test.list
     sed -i s+repo/+repo-test/+ /etc/apt/sources.list.d/htcondor-test.list
-    apt update
+    apt-get update
 fi
 if [ $ID = 'future' ]; then
     cp -p /etc/yum.repos.d/htcondor.repo /etc/yum.repos.d/htcondor-test.repo
     sed -i s+repo/+repo-test/+ /etc/yum.repos.d/htcondor-test.repo
     sed -i s/\\[htcondor/[htcondor-test/ /etc/yum.repos.d/htcondor-test.repo
+    # ] ] Help out vim syntax highlighting
+fi
+if [ $ID = 'future-opensuse-leap' ]; then
+    cp -p /etc/zypp/repos.d/htcondor.repo /etc/zypp/repos.d/htcondor-test.repo
+    sed -i s+repo/+repo-test/+ /etc/zypp/repos.d/htcondor-test.repo
+    sed -i s/\\[htcondor/[htcondor-test/ /etc/zypp/repos.d/htcondor-test.repo
     # ] ] Help out vim syntax highlighting
 fi
 
@@ -128,16 +147,22 @@ if [ $ID = 'almalinux' ] || [ $ID = 'amzn' ] || [ $ID = 'centos' ] || [ $ID = 'f
     yum-builddep -y /tmp/rpm/condor.spec
 fi
 
+# Install the build dependencies
+if [ $ID = 'opensuse-leap' ]; then
+    $INSTALL make rpm-build
+    $INSTALL $(rpmspec --parse /tmp/rpm/condor.spec | grep '^BuildRequires:' | sed -e 's/^BuildRequires://' | sed -e 's/,/ /')
+fi
+
 # Need newer cmake on bionic
 if [ "$VERSION_CODENAME" = 'bionic' ]; then
     curl -dsSL https://apt.kitware.com/keys/kitware-archive-latest.asc | apt-key add -
     echo 'deb https://apt.kitware.com/ubuntu/ bionic main' > /etc/apt/sources.list.d/cmake.list
-    apt update
+    apt-get update
 fi
 
 if [ $ID = 'debian' ] || [ $ID = 'ubuntu' ]; then
     $INSTALL build-essential devscripts equivs gpp
-    (cd /tmp/debian; ./prepare-build-files.sh)
+    (cd /tmp/debian; ./prepare-build-files.sh -DUW_BUILD)
     mk-build-deps --install --tool='apt-get -o Debug::pkgProblemResolver=yes --no-install-recommends --yes' /tmp/debian/control
 fi
 
@@ -149,7 +174,7 @@ fi
 
 # Add useful debugging tools
 $INSTALL gdb git less nano patchelf python3-pip strace sudo vim
-if [ $ID = 'almalinux' ] || [ $ID = 'amzn' ] || [ $ID = 'centos' ] || [ $ID = 'fedora' ]; then
+if [ $ID = 'almalinux' ] || [ $ID = 'amzn' ] || [ $ID = 'centos' ] || [ $ID = 'fedora' ] || [ $ID = 'opensuse-leap' ]; then
     $INSTALL iputils rpmlint
 fi
 if [ $ID = 'debian' ] || [ $ID = 'ubuntu' ]; then
@@ -166,27 +191,36 @@ if [ $ID = 'debian' ] || [ $ID = 'ubuntu' ]; then
     sed -i -e 's/^hosts:.*/& myhostname/' /etc/nsswitch.conf
 fi
 
-if [ $ID = 'almalinux' ] || [ $ID = 'amzn' ] || [ $ID = 'centos' ] || [ $ID = 'fedora' ]; then
-    $INSTALL condor hostname java openssh-clients openssh-server openssl procps-ng
+if [ $ID = 'almalinux' ] || [ $ID = 'amzn' ] || [ $ID = 'centos' ] || [ $ID = 'fedora' ] || [ $ID = 'opensuse-leap' ]; then
+    $INSTALL condor hostname java openssh-clients openssh-server openssl
+    if [ $ID = 'opensuse-leap' ]; then
+        $INSTALL procps wget
+        # Install better patchelf
+        wget https://github.com/NixOS/patchelf/releases/download/0.18.0/patchelf-0.18.0-x86_64.tar.gz
+        (cd /usr; tar xfpz /patchelf-0.18.0-x86_64.tar.gz ./bin/patchelf)
+        rm patchelf-0.18.0-x86_64.tar.gz
+    else
+        $INSTALL procps-ng
+    fi
     if [ $ID != 'amzn' ]; then
         $INSTALL apptainer
     fi
     $INSTALL 'perl(Archive::Tar)' 'perl(Data::Dumper)' 'perl(Digest::MD5)' 'perl(Digest::SHA)' 'perl(English)' 'perl(Env)' 'perl(File::Copy)' 'perl(FindBin)' 'perl(Net::Domain)' 'perl(Sys::Hostname)' 'perl(Time::HiRes)' 'perl(XML::Parser)'
 fi
 
-# Matcb the current version. Consult:
+# Match the current version. Consult:
 # https://apptainer.org/docs/admin/latest/installation.html#install-debian-packages
 if [ $ID = 'debian' ] && [ "$ARCH" = 'x86_64' ]; then
     $INSTALL wget
-    wget https://github.com/apptainer/apptainer/releases/download/v1.2.3/apptainer_1.2.3_amd64.deb
-    $INSTALL ./apptainer_1.2.3_amd64.deb
-    rm ./apptainer_1.2.3_amd64.deb
+    wget https://github.com/apptainer/apptainer/releases/download/v1.2.5/apptainer_1.2.5_amd64.deb
+    $INSTALL ./apptainer_1.2.5_amd64.deb
+    rm ./apptainer_1.2.5_amd64.deb
 fi
 
 if [ $ID = 'ubuntu' ] && [ "$ARCH" = 'x86_64' ]; then
     $INSTALL software-properties-common
     add-apt-repository -y ppa:apptainer/ppa
-    apt update
+    apt-get update
     $INSTALL apptainer
 fi
 
@@ -197,15 +231,17 @@ mkdir -p "$externals_dir"
 if [ $ID = 'debian' ] || [ $ID = 'ubuntu' ]; then
     chown _apt "$externals_dir"
     pushd "$externals_dir"
-    apt download condor-stash-plugin libgomp1 libmunge2 libpcre2-8-0 libscitokens0 libvomsapi1v5
+    apt-get download libgomp1 libmunge2 libpcre2-8-0 libscitokens0 pelican pelican-osdf-compat
     if [ $VERSION_CODENAME = 'bullseye' ]; then
-        apt download libboost-python1.74.0
+        apt-get download libboost-python1.74.0 libvomsapi1v5
     elif [ $VERSION_CODENAME = 'bookworm' ]; then
-        apt download libboost-python1.74.0
+        apt-get download libboost-python1.74.0 libvomsapi1v5
     elif [ $VERSION_CODENAME = 'focal' ]; then
-        apt download libboost-python1.71.0
+        apt-get download libboost-python1.71.0 libvomsapi1v5
     elif [ $VERSION_CODENAME = 'jammy' ]; then
-        apt download libboost-python1.74.0
+        apt-get download libboost-python1.74.0 libvomsapi1v5
+    elif [ $VERSION_CODENAME = 'noble' ]; then
+        apt-get download libboost-python1.83.0 libvomsapi1t64
     else
         echo "Unknown codename: $VERSION_CODENAME"
         exit 1
@@ -214,7 +250,7 @@ if [ $ID = 'debian' ] || [ $ID = 'ubuntu' ]; then
 fi
 if [ $ID = 'almalinux' ] || [ $ID = 'amzn' ] || [ $ID = 'centos' ] || [ $ID = 'fedora' ]; then
     yumdownloader --downloadonly --destdir="$externals_dir" \
-        condor-stash-plugin libgomp munge-libs pcre2 scitokens-cpp
+        libgomp munge-libs pelican pelican-osdf-compat pcre2 scitokens-cpp
     if [ $ID != 'amzn' ]; then
         yumdownloader --downloadonly --destdir="$externals_dir" voms
     fi
@@ -227,6 +263,9 @@ if [ $ID = 'almalinux' ] || [ $ID = 'amzn' ] || [ $ID = 'centos' ] || [ $ID = 'f
     # Remove 32-bit x86 packages if any
     rm -f "$externals_dir"/*.i686.rpm
 fi
+if [ $ID = 'opensuse-leap' ]; then
+    zypper --non-interactive --pkg-cache-dir "$externals_dir" download libgomp1 libmunge2 libpcre2-8-0 libSciTokens0 libboost_python-py3-1_75_0 pelican pelican-osdf-compat
+fi
 
 # Clean up package caches
 if [ $ID = 'centos' ]; then
@@ -238,8 +277,8 @@ if [ $ID = 'amzn' ] || [ $ID = 'almalinux' ] || [ $ID = 'fedora' ]; then
     rm -rf /var/cache/yum/*
 fi
 if [ $ID = 'debian' ] || [ $ID = 'ubuntu' ]; then
-    apt -y autoremove
-    apt -y clean
+    apt-get -y autoremove
+    apt-get -y clean
 fi
 
 # Install apptainer into externals directory
@@ -252,15 +291,21 @@ if [ $ID != 'amzn' ]; then
         curl -s https://raw.githubusercontent.com/apptainer/apptainer/main/tools/install-unprivileged.sh | \
             bash -s - "$externals_dir/apptainer"
         rm -r "$externals_dir/apptainer/$ARCH/libexec/apptainer/cni"
+        # Move apptainer out of the default path
+        mv "$externals_dir/apptainer/bin" "$externals_dir/apptainer/libexec"
     fi
 fi
 
 # Install pytest for BaTLab testing
 # Install sphinx-mermaid so docs can have images
-if [ "$VERSION_CODENAME" = 'bookworm' ]; then
-    pip3 install --break-system-packages pytest pytest-httpserver sphinxcontrib-mermaid
+if [ $ID = 'debian' ] || [ $ID = 'ubuntu' ]; then
+    if [ "$VERSION_CODENAME" = 'bullseye' ] || [ "$VERSION_CODENAME" = 'focal' ] || [ "$VERSION_CODENAME" = 'jammy' ]; then
+        pip3 install pytest pytest-httpserver sphinxcontrib-mermaid
+    else
+        pip3 install --break-system-packages pytest pytest-httpserver sphinxcontrib-mermaid
+    fi
 else
-    pip3 install pytest pytest-httpserver sphinxcontrib-mermaid
+        pip3 install pytest pytest-httpserver sphinxcontrib-mermaid
 fi
 
 if [ $ID = 'amzn' ] || [ "$VERSION_CODENAME" = 'bullseye' ] || [ "$VERSION_CODENAME" = 'focal' ]; then

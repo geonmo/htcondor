@@ -1,9 +1,6 @@
 Configuration for Access Points
 ===============================
 
-*condor_schedd* Policy Configuration
--------------------------------------
-
 :index:`condor_schedd policy<single: condor_schedd policy; configuration>`
 :index:`policy configuration<single: policy configuration; submit host>`
 
@@ -98,7 +95,7 @@ a descriptive name. For the three example submit requirements described:
 The criterion for each submit requirement is then specified in
 configuration variable 
 :macro:`SUBMIT_REQUIREMENT_<Name>`, where ``<Name>`` matches the
-chosen name listed in ``SUBMIT_REQUIREMENT_NAMES``. The value is a
+chosen name listed in :macro:`SUBMIT_REQUIREMENT_NAMES`. The value is a
 boolean ClassAd expression. The three example criterion result in these
 configuration variable definitions:
 
@@ -114,7 +111,7 @@ terminates further evaluation of other submit requirements, and is the
 only requirement reported. Each submit requirement is evaluated in the
 context of the *condor_schedd* ClassAd, which is the ``MY.`` name space
 and the job ClassAd, which is the ``TARGET.`` name space. Note that
-``JobUniverse`` and ``RequestMemory`` are both job ClassAd attributes.
+:ad-attr:`JobUniverse` and :ad-attr:`RequestMemory` are both job ClassAd attributes.
 
 Further configuration may associate a rejection reason with a submit
 requirement with the :macro:`SUBMIT_REQUIREMENT_<Name>_REASON`.
@@ -138,7 +135,7 @@ typically be immediately presented to the user. If an optional
 :macro:`SUBMIT_REQUIREMENT_<Name>_REASON` is not defined, a default reason
 will include the ``<Name>`` chosen for the submit requirement.
 Completing the presentation of the example submit requirements, upon an
-attempt to submit a standard universe job, *condor_submit* would print
+attempt to submit a standard universe job, :tool:`condor_submit` would print
 
 .. code-block:: text
 
@@ -159,7 +156,7 @@ Starting in HTCondor 8.7.4, you may instead configure submit warnings. A
 submit warning is a submit requirement for which
 :macro:`SUBMIT_REQUIREMENT_<Name>_IS_WARNING` is true. A submit
 warning does not cause the submission to fail; instead, it returns a
-warning to the user's console (when triggered via *condor_submit*) or
+warning to the user's console (when triggered via :tool:`condor_submit`) or
 writes a message to the user log (always). Submit warnings are intended
 to allow HTCondor administrators to provide their users with advance
 warning of new submit requirements. For example, if you want to increase
@@ -172,7 +169,7 @@ the minimum request memory, you could use the following configuration.
     SUBMIT_REQUIREMENT_OneGig_REASON = "As of <date>, the minimum requested memory will be 1024."
     SUBMIT_REQUIREMENT_OneGig_IS_WARNING = TRUE
 
-When a user runs *condor_submit* to submit a job with ``RequestMemory``
+When a user runs :tool:`condor_submit` to submit a job with :ad-attr:`RequestMemory`
 between 512 and 1024, they will see (something like) the following,
 assuming that the job meets all the other requirements.
 
@@ -219,12 +216,12 @@ a time is acting as the single submission point. To make remote
 submission of jobs work properly, set the configuration variable
 :macro:`SCHEDD_NAME` in the local configuration to
 have the same value for each potentially running *condor_schedd*
-daemon. In addition, the value chosen for the variable ``SCHEDD_NAME``
+daemon. In addition, the value chosen for the variable :macro:`SCHEDD_NAME`
 will need to include the at symbol (@), such that HTCondor will not
 modify the value set for this variable. See the description of
-``MASTER_NAME`` in the :ref:`admin-manual/configuration-macros:condor_master
+:macro:`MASTER_NAME` in the :ref:`admin-manual/configuration-macros:condor_master
 configuration file macros` section for defaults and composition of valid values
-for ``SCHEDD_NAME``. As an example, include in each local configuration a value
+for :macro:`SCHEDD_NAME`. As an example, include in each local configuration a value
 similar to:
 
 .. code-block:: condor-config
@@ -253,8 +250,8 @@ the machine the schedd is running on for further monitoring.
 See the section in :ref:`admin-manual/ep-policy-configuration:Startd Cron`
 for examples and information about this.
 
-HTCondor's Dedicated Scheduling
--------------------------------
+Dedicated Scheduling
+--------------------
 
 :index:`dedicated scheduling`
 :index:`under the dedicated scheduler<single: under the dedicated scheduler; MPI application>`
@@ -282,7 +279,7 @@ access point, choose a machine that all users can log into, as well as
 one that is likely to be up and running all the time. All of HTCondor's
 other resource requirements for a access point apply to this machine,
 such as having enough disk space in the spool directory to hold jobs.
-See :doc:`directories` for more information.
+See :ref:`admin-manual/logging:directories` for more information.
 
 Configuration Examples for Dedicated Resources
 ''''''''''''''''''''''''''''''''''''''''''''''
@@ -353,7 +350,7 @@ Policy Scenario: Machine Runs Only Jobs That Require Dedicated Resources
 
     The :macro:`START` expression specifies that a job
     with the ``Scheduler`` attribute must match the string corresponding
-    ``DedicatedScheduler`` attribute in the machine ClassAd. The
+    :macro:`DedicatedScheduler` attribute in the machine ClassAd. The
     :macro:`RANK` expression specifies that this same job
     (with the ``Scheduler`` attribute) has the highest rank. This
     prevents other jobs from preempting it based on user priorities. The
@@ -398,7 +395,7 @@ Policy Scenario: Adding Desktop Resources To The Mix
                        + $(RANK)
         START  = (Scheduler =?= $(DedicatedScheduler)) || ($(START))
 
-    Define :macro:`RANK_FACTOR` to be a larger
+    Define ``RANK_FACTOR`` to be a larger
     value than the maximum value possible for the existing rank
     expression. :macro:`RANK` is a floating point value,
     so there is no harm in assigning a very large value.
@@ -465,7 +462,7 @@ Each *condor_startd* must define which group it belongs to by setting the
 advertising it into the machine ClassAd. The value of this variable is a
 string, which should be the same for all *condor_startd* daemons within a given
 group. The property must be advertised in the *condor_startd* ClassAd by
-appending ``ParallelSchedulingGroup`` to the :macro:`STARTD_ATTRS`
+appending :macro:`ParallelSchedulingGroup` to the :macro:`STARTD_ATTRS`
 configuration variable.
 
 The submit description file for a parallel universe job which must not
@@ -486,7 +483,7 @@ High Availability of the Job Queue
     This High Availability configuration depends entirely on using
     an extremely reliably shared file server.  In our experience, only
     expensive, proprietary file servers are suitable for this role.
-    Frequently, casual configuation of a Highly Available HTCondor
+    Frequently, casual configuration of a Highly Available HTCondor
     job queue will result in lowered reliability.
 
 For a pool where all jobs are submitted through a single machine in the
@@ -540,16 +537,16 @@ configuration must have access to the lock (the job queue) which
 synchronizes which single machine does run the *condor_schedd* daemon.
 This lock and the job queue must both be located in a shared file space,
 and is currently specified only with a file URL. The configuration
-specifies the shared space (``SPOOL``), and the URL of the lock.
-*condor_preen* is not currently aware of the lock file and will delete
-it if it is placed in the ``SPOOL`` directory, so be sure to add file
-``SCHEDD.lock`` to :macro:`VALID_SPOOL_FILES`.
+specifies the shared space (:macro:`SPOOL`), and the URL of the lock.
+:tool:`condor_preen` is not currently aware of the lock file and will delete
+it if it is placed in the :macro:`SPOOL` directory, so be sure to add file
+``SCHEDD.lock`` to :macro:`VALID_SPOOL_FILES[with HA Schedd]`.
 
 As HTCondor starts on machines that are configured to run the single
-*condor_schedd* daemon, the *condor_master* daemon of the first
+*condor_schedd* daemon, the :tool:`condor_master` daemon of the first
 machine that looks at (polls) the lock and notices that no lock is held.
 This implies that no *condor_schedd* daemon is running. This
-*condor_master* daemon acquires the lock and runs the *condor_schedd*
+:tool:`condor_master` daemon acquires the lock and runs the *condor_schedd*
 daemon. Other machines with this same capability to run the
 *condor_schedd* daemon look at (poll) the lock, but do not run the
 daemon, as the lock is held. The machine running the *condor_schedd*
@@ -557,17 +554,140 @@ daemon renews the lock periodically.
 
 If the machine running the *condor_schedd* daemon fails to renew the
 lock (because the machine is not functioning), the lock times out
-(becomes stale). The lock is released by the *condor_master* daemon if
-*condor_off* or *condor_off -schedd* is executed, or when the
-*condor_master* daemon knows that the *condor_schedd* daemon is no
+(becomes stale). The lock is released by the :tool:`condor_master` daemon if
+:tool:`condor_off` or *condor_off -schedd* is executed, or when the
+:tool:`condor_master` daemon knows that the *condor_schedd* daemon is no
 longer running. As other machines capable of running the
 *condor_schedd* daemon look at the lock (poll), one machine will be the
 first to notice that the lock has timed out or been released. This
 machine (correctly) interprets this situation as the *condor_schedd*
-daemon is no longer running. This machine's *condor_master* daemon then
+daemon is no longer running. This machine's :tool:`condor_master` daemon then
 acquires the lock and runs the *condor_schedd* daemon.
 
 See the :ref:`admin-manual/configuration-macros:condor_master configuration
 file macros` section for details relating to the configuration variables used
 to set timing and polling intervals.
 
+Performance Tuning of the AP
+----------------------------
+
+Of the three roles (AP, CM, EP) in a HTCondor system, the AP is the most common
+place performance tuning is done.  The CM is mostly stateless, and can
+typically scale out to very large pools without much additional work.  The EP
+daemons aren't resource intensive.  However, as the AP stores the state of all
+the jobs under its control, and persistently stores frequent updates to those
+jobs, it is not uncommon for the AP to exhaust system resources, like cpu, or
+disk and network bandwidth.
+
+Monitoring AP Performance
+'''''''''''''''''''''''''
+
+The *condor_schedd* is single threaded.  Practically, this means that it only
+does one thing at a time, and often when it may be "busy" doing that one thing,
+it is actually waiting on the system for some i/o to complete.  As such, it
+will rarely appear to use 100% of a cpu in any system monitoring tool.  To help
+guage how busy the schedd is, it keeps track of a metric called
+:ad-attr:`RecentDaemonCoreDutyCycle`.  This is a floating point value that
+ranges from 0.0 (completely idle) to 1.0 (competely busy).  Values over 0.95
+indicate the schedd is overloaded.  In extreme cases :tool:`condor_q` and
+:tool:`condor_submit` may timeout and fail trying to communicate to an
+overloaded schedd.  An administrator can see this attribute by running
+
+.. code-block:: console
+
+    $ condor_status -direct -schedd name-of-schedd -af RecentDaemonCoreDutyCycle
+
+
+Horizontal Scaling
+''''''''''''''''''
+
+While the *condor_schedd* and the machine it runs on can be tuned to handle a
+greater rate of jobs, every machine has some limit of jobs it can support.  The
+main strategy for supporting more jobs in the system as a whole is simply by
+running more schedds, or horizontal scaling.  This may require partitioning
+users onto differening submit machines, or submiting remotely, but at the end
+of the day, the best way to scale out a very large HTCondor system is by adding
+more *condor_schedd*'s.
+
+Putting the schedd's database on the fastest disk
+'''''''''''''''''''''''''''''''''''''''''''''''''
+
+The *condor_schedd* frequently saves state to a file on disk, so that in event
+of a crash, no jobs will be lost on a restart.  The cost of this reliability,
+though, is relatively high.  In addition to writing to the disk, the schedd
+uses the fsync system call to force all the data onto the disk. By default,
+this file named job_queue.log is written to the :macro:`SPOOL` directory.
+However, the configuration option :macro:`JOB_QUEUE_LOG` will override this path.  Setting
+:macro:`JOB_QUEUE_LOG` to point to a file on a solid state or nvme drive will
+make the schedd faster.  Ideally, this path should be on a filesystem that only
+holds this file.
+
+Avoiding shared filesystems for event logs
+''''''''''''''''''''''''''''''''''''''''''
+
+Another type of file the *condor_schedd* frequently writes to are job event
+logs, those specified by the :subcom:`log` submit command.  When these are on
+NFS or other distributed or slow filesystems, the whole system can slow down
+tremendously.  If possible, encourage users not to put their event logs on such
+slow filesystems.
+
+Using third party (url / plugin) transfers when able
+''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+HTCondor can transfer user's sandboxes to the EP in many ways.  The default
+method, called HTCondor file transfer, or "cedar" file transfer, copies files
+from the AP to the EP.  Obviously, this uses cpu, disk and network bandwidth on
+the AP.  To the degree possible, changing large input file file transfers from
+cedar, to http transfers from some third party server, moves the load off of
+the AP, and onto an http server.  If one http server isn't sufficent there are
+many methods for scaling http servers to handle additional load.
+
+Limiting CPU or I/O bound procesing on the AP
+'''''''''''''''''''''''''''''''''''''''''''''
+
+The machine the *condor_schedd* runs on is typically a machine users can log
+into, to prepare and submit jobs.  Sometimes, users will start long-running,
+cpu or I/O heavy jobs on the submit machine, which can slow down the various
+HTCondor services on that machine.  We encourage admins to try to limit this,
+either by social pressure, or enforced by system limits on the user cpu.
+
+.. _enabling htcondor annex:
+
+Enabling ``htcondor annex`` on an AP
+------------------------------------
+
+The macro template :macro:`use feature:HPC_ANNEX` enables the ``annex``
+noun of the :doc:`../man-pages/htcondor` command and configures HTCondor
+to support it.
+
+.. note::
+
+    The following section is not normative; it reflects the implementation
+    at the time of writing.
+
+The annex pilot starts an EP which directly connects to the AP, using an
+IDTOKEN generated by :doc:`../man-pages/condor_token_fetch`.  The AP will
+only run a job on a directly-connected EP if that token's identifier is
+the same as that job's :ad-attr:`Owner` attribute.  Obtaining this token will
+naturally fail if the user running ``htcondor annex`` does not have
+permission to submit jobs.  (The signing key used to generate the token is
+automatically created as a result of the macro template and is used for no
+other purpose.)
+
+However, because the schedd does not have a stable address by default (its
+shared port ID changes), the annex pilot needs a collector to look the
+schedd up in.  So you will notice a small collector on the side; the
+macro template calls it the "AP collector".  This collector performs two
+other tasks: it generates the random key used to sign the pilot job's
+token, and it holds a copy of the slot ads generated by annex EPs so that
+``htcondor annex`` does not have to query the schedd for them, reducing
+the load on that daemon.
+
+The configuration assumes that IDTOKENS are enabled for both the schedd
+and the collector, rather than trying to modify the security configuration
+of those two daemons.
+
+Finally, the macro template adds a job transform so that jobs submitted
+with a ``TargetAnnexName`` attribute -- as jobs submitted via
+``htcondor job submit --annex-name`` will have -- will only run on resources
+with the same annex name and with the same owner.

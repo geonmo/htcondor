@@ -33,6 +33,7 @@ class Daemon;
 #include "condor_secman.h"
 #include "daemon_types.h"
 #include "KeyCache.h"
+#include "string_list.h"
 #include "CondorError.h"
 #include "command_strings.h"
 #include "dc_message.h"
@@ -151,6 +152,12 @@ public:
 		// //////////////////////////////////////////////////////////
 		/// Methods for getting information about the daemon.
 		// //////////////////////////////////////////////////////////
+
+	// The caller DOES NOT own the returned pointer.  If we found
+	// the daemon via the configuration file or the address file, the
+	// ad will be synthetic.  Returns NULL instead of an incomplete
+	// location ad.
+	virtual ClassAd * locationAd();
 
 		/** Return the daemon's name.  This will return the name of
 		  the daemon, which is usually the fully qualified hostname,
@@ -663,6 +670,9 @@ public:
 	void setAuthenticationMethods(const std::vector<std::string> &methods) {m_methods = methods;}
 	const std::vector<std::string> &getAuthenticationMethods() const {return m_methods;}
 
+	void setSecSessionId(const std::string& sess_id) { m_sec_session_id = sess_id; }
+	const std::string& getSecSessionId() { return m_sec_session_id; }
+
 protected:
 	// Data members
 	std::string _name;
@@ -688,7 +698,11 @@ protected:
 	bool _is_configured;
 	bool m_should_try_token_request{false};
 	SecMan _sec_man;
-	StringList daemon_list;
+	// If our target daemon is the default collector
+	// (i.e. param COLLECTOR_HOST) and it's a list of collectors,
+	// keep the full set of collector names here.
+	std::vector<std::string> collector_list;
+	std::vector<std::string>::iterator collector_list_it;
 
 
 
@@ -932,10 +946,16 @@ private:
 
 	ClassAd *m_daemon_ad_ptr;
 
+	ClassAd * m_location_ad_ptr = NULL;
+
 	std::string m_trust_domain;
 
 		// The virtual 'owner' of this collector object
 	std::string m_owner;
+
+		// The security session to use for each command.
+		// If empty, find/create a session automatically
+	std::string m_sec_session_id;
 
 		// Authentication method overrides
 	std::vector<std::string> m_methods;

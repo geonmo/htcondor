@@ -63,7 +63,7 @@ public:
 
 	// As we don't get the requested cgroup name in register, this method
 	// actually makes the cgroup, if need be.
-	bool track_family_via_cgroup(pid_t pid, const FamilyInfo *fi);
+	bool track_family_via_cgroup(pid_t pid, FamilyInfo *fi);
 
 	bool get_usage(pid_t, ProcFamilyUsage&, bool);
 
@@ -107,6 +107,7 @@ private:
 	pid_t family_root_pid;
 	uint64_t cgroup_memory_limit;
 	int cgroup_cpu_shares;
+	std::vector<dev_t> cgroup_hide_devices;
 };
 
 #endif

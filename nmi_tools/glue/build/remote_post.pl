@@ -164,16 +164,18 @@ if( $ENV{NMI_PLATFORM} =~ /_win/i ) {
 		}
 }
 else {
-    system("mv *.tar.gz *.rpm *.deb $pub_dir");
-    if (glob("*.changes")) {
-        system("mv *.changes *.dsc *.debian.tar.xz $pub_dir");
+    system("mv *.tar.gz $pub_dir");
+    if (glob("*.rpm")) {
+        system("mv *.rpm $pub_dir");
+    } elsif (glob("*.changes")) {
+        system("mv *.changes *.dsc *deb *.debian.tar.xz $pub_dir");
     }
     system("cmake -E md5sum $pub_dir/* md5s.txt");
 }
 
 
 # copy all the bits in which are required to run batch_test (omg what a cf) 
-if( $ENV{NMI_PLATFORM} =~ /AlmaLinux|AmazonLinux|CentOS|Fedora|Rocky|Debian|Ubuntu/i ) {
+if( $ENV{NMI_PLATFORM} =~ /AlmaLinux|AmazonLinux|CentOS|Fedora|openSUSE|Rocky|Debian|Ubuntu/i ) {
     system("tar xfp $pub_dir/condor_tests-*.tar.gz");
     system("mv condor_tests-*/condor_tests $pub_dir");
     system("rmdir condor_tests-*");

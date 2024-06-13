@@ -338,6 +338,7 @@ public:
 };
 
 typedef JobQueueUserRec OwnerInfo;
+typedef JOB_ID_KEY JobQueueKey;
 
 // Internal set attribute functions for only the schedd to use.
 // these functions add attributes to a transaction and also set a transaction trigger
@@ -350,6 +351,8 @@ inline int SetUserAttributeString(JobQueueUserRec & urec, const char * attr_name
 	return SetUserAttributeValue(urec, attr_name, tmp);
 }
 int DeleteUserAttribute(JobQueueUserRec & urec, const char * attr_name);
+struct UpdateUserAttributesInfo { int valid{0}; int invalid{0}; int special{0}; };
+int UpdateUserAttributes(JobQueueKey & key, const ClassAd & cmdAd, bool enabled, struct UpdateUserAttributesInfo& info );
 
 // get the Effect User record from the peer
 // returns NULL if no peer or the peer has not yet had an userrec set.
@@ -710,7 +713,6 @@ public:
 	JOB_ID_KEY_BUF(const JOB_ID_KEY& rhs)     : JOB_ID_KEY(rhs.cluster, rhs.proc) { job_id_str[0] = 0; }
 };
 
-typedef JOB_ID_KEY JobQueueKey;
 #ifdef JOB_QUEUE_PAYLOAD_IS_BASE
 typedef JobQueueBase* JobQueuePayload;
 #else
@@ -839,6 +841,7 @@ private:
 
 #define JOB_QUEUE_ITERATOR_OPT_INCLUDE_CLUSTERS     0x0001
 #define JOB_QUEUE_ITERATOR_OPT_INCLUDE_JOBSETS      0x0002
+#define JOB_QUEUE_ITERATOR_OPT_NO_PROC_ADS          0x0004
 JobQueueLogType::filter_iterator GetJobQueueIterator(const classad::ExprTree &requirements, int timeslice_ms);
 JobQueueLogType::filter_iterator GetJobQueueIteratorEnd();
 
@@ -884,7 +887,8 @@ bool JobSetCreate(int setId, const char * setName, const char * ownerinfoName);
 
 #ifdef USE_JOB_QUEUE_USERREC
 bool UserRecDestroy(int userrec_id);
-bool UserRecCreate(int userrec_id, const char * ownerinfoName, bool enabled);
+bool UserRecCreate(int userrec_id, const char * ownerinfoName, const ClassAd & cmdAd, const ClassAd & defaultsAd, bool enabled);
+void UserRecFixupDefaultsAd(ClassAd & defaultsAd);
 #endif
 
 // priority records
@@ -894,8 +898,8 @@ extern HashTable<int,int> *PrioRecAutoClusterRejected;
 extern int grow_prio_recs(int);
 
 extern void	FindRunnableJob(PROC_ID & jobid, ClassAd* my_match_ad, char const * user);
-extern int Runnable(PROC_ID*);
-extern int Runnable(JobQueueJob *job, const char *& reason);
+extern bool Runnable(PROC_ID*);
+extern bool Runnable(JobQueueJob *job, const char *& reason);
 
 extern class ForkWork schedd_forker;
 

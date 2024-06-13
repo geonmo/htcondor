@@ -57,7 +57,7 @@ const char * const _condor_DebugCategoryNames[D_CATEGORY_COUNT] = {
 	"D_PRIV", "D_DAEMONCORE", "D_FULLDEBUG", "D_SECURITY",
 	"D_COMMAND", "D_MATCH", "D_NETWORK", "D_KEYBOARD",
 	"D_PROCFAMILY", "D_IDLE", "D_THREADS", "D_ACCOUNTANT",
-	"D_SYSCALLS", "D_21", "D_HOSTNAME", "D_PERF_TRACE", // D_21 formerly D_CKPT
+	"D_SYSCALLS", "D_CRON", "D_HOSTNAME", "D_PERF_TRACE", // D_CRON formerly D_CKPT
 	"D_LOAD", "D_25", "D_26", "D_AUDIT", "D_TEST",      // D_25 formerly D_PROC (HAD)  D_26 formerly D_NFS
 	"D_STATS", "D_MATERIALIZE", "D_31",
 };
@@ -114,7 +114,6 @@ void __wrap_dprintf(int flags, const char * fmt, ...)
  * Note: we don't default basic output D_ALWAYS here, it's up to the caller to do so if needed.
  *       we also don't clear basic & verbose here.  once again its up to the caller to initialize
  *
- * If this were C++ code, we could use StringList instead of strtok().
  * We don't use strtok_r() because it's not available on Windows.
  */
 void
@@ -236,6 +235,33 @@ _condor_parse_merge_debug_flags(
 		basic |= (1<<D_GENERIC_VERBOSE);
 	}
 }
+
+bool parse_debug_cat_and_verbosity(const char * strFlags, int & cat_and_verb, unsigned int * hdr_flags)
+{
+	if ( ! strFlags || ! strFlags[0])
+		return false;
+
+	cat_and_verb = 0;
+	unsigned int hdr = 0;
+	DebugOutputChoice basic=0, verbose=0;
+	_condor_parse_merge_debug_flags(strFlags, 0, hdr, basic, verbose);
+	// bits that are set in the verbose mask are always set in basic also
+	// so we only need to look at the basic mask to know if any bits were set
+	// we will return the category code of the *lowest* set bit
+	if (basic) {
+		for (unsigned int cat = D_ALWAYS; cat < D_CATEGORY_COUNT; ++cat) {
+			if (basic & (1<<cat)) {
+				if (hdr_flags) *hdr_flags = hdr;
+				cat_and_verb = cat;
+				if (verbose & (1<<cat)) cat_and_verb |= D_VERBOSE;
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
 
 // convert old style flags to DebugOutputChoice
 //

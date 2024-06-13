@@ -8,8 +8,28 @@ to complete before others start running. This allows the outputs of some jobs
 to be used as inputs for others, and makes it easy to replicate a workflow
 multiple times in the future.
 
+.. sidebar:: Example DAG Visualized
 
-.. note:: 
+    .. mermaid::
+        :align: center
+
+        flowchart TD
+         A --> B
+
+
+A simple example is a workflow that requires output from node ``A`` to become
+input for node ``B``. This can be described as a DAGMan workflow as follows:
+
+.. code-block:: condor-dagman
+    :caption: Example DAG description file
+
+    # Example DAGMan Workflow
+    JOB A produce_data.sub
+    JOB B process_data.sub
+
+    PARENT A CHILD B
+
+.. note::
 
     A video introducing the DAGman tool for beginners is available at
     https://www.youtube.com/watch?v=1MvVHxRs7iU and another video, for
@@ -22,26 +42,9 @@ multiple times in the future.
    :glob:
 
    dagman-introduction
-   dagman-scripts
-   node-pass-or-fail
-   dagman-file-paths
    dagman-interaction
-   dagman-save-files
-   dagman-resubmit-failed
-   dagman-priorities
-   dagman-mulit-submit
+   dagman-completion
    dagman-using-other-dags
-   dagman-throttling
-   dagman-submit-optimization
-   dagman-lots-of-jobs
-   dagman-vars
-   dagman-job-ad-attrs
-   dagman-config
-   dagman-include
-   dagman-all-nodes
-   dagman-accounting
-   dagman-node-types
-   dagman-DOT-files
-   dagman-node-status-file
-   dagman-jobstate-log
-   dagman-workflow-metrics
+   dagman-advance-functionality
+   dagman-information-files
+   dagman-reference

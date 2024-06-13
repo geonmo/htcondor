@@ -32,6 +32,8 @@
 #include "condor_secman.h"
 #include "condor_scitokens.h"
 #include "ca_utils.h"
+#include "fcloser.h"
+#include "globus_utils.h"
 
 #if defined(DLOPEN_SECURITY_LIBS)
 #include <dlfcn.h>
@@ -53,6 +55,9 @@
 #include <sstream>
 #include <iomanip>
 #include <string.h>
+
+// remove when we have C++ 23 everywhere
+#include "zip_view.hpp"
 
 #include "condor_daemon_core.h"
 
@@ -424,9 +429,8 @@ int Condor_Auth_SSL::authenticate(const char * /* remoteHost */, CondorError* er
 					m_auth_state->m_client_status = AUTH_SSL_ERROR;
 				}
 			} else {
-				std::unique_ptr<FILE,decltype(&::fclose)> f(
-					safe_fopen_no_create( m_scitokens_file.c_str(), "r" ), 
-					&::fclose);
+				std::unique_ptr<FILE,fcloser> f(
+					safe_fopen_no_create( m_scitokens_file.c_str(), "r" ));
 
 				if (f.get() == nullptr) {
 					dprintf(D_ALWAYS, "Failed to open scitoken file '%s': %d (%s)\n",
@@ -1128,24 +1132,14 @@ Condor_Auth_SSL::server_verify_scitoken(CondorError* errstack)
 	}
 	classad::ClassAd ad;
 	if (!groups.empty()) {
-		std::stringstream ss;
-		bool first = true;
-		for (const auto &grp : groups) {
-			ss << (first ? "" : ",") << grp;
-			first = false;
-		}
-		ad.InsertAttr(ATTR_TOKEN_GROUPS, ss.str());
+		std::string ss = join(groups, ",");
+		ad.InsertAttr(ATTR_TOKEN_GROUPS, ss);
 	}
 		// These are *not* the same as authz; the authz are filtered (and stripped)
 		// for the prefix condor:/
 	if (!scopes.empty()) {
-		std::stringstream ss;
-		bool first = true;
-		for (const auto &scope : scopes) {
-			ss << (first ? "" : ",") << scope;
-			first = false;
-		}
-		ad.InsertAttr(ATTR_TOKEN_SCOPES, ss.str());
+		std::string ss = join(scopes, ",");
+		ad.InsertAttr(ATTR_TOKEN_SCOPES, ss);
 	}
 	if (!jti.empty()) {
 		ad.InsertAttr(ATTR_TOKEN_ID, jti);
@@ -1153,14 +1147,13 @@ Condor_Auth_SSL::server_verify_scitoken(CondorError* errstack)
 	ad.InsertAttr(ATTR_TOKEN_ISSUER, issuer);
 	ad.InsertAttr(ATTR_TOKEN_SUBJECT, subject);
 	if (!bounding_set.empty()) {
-		std::stringstream ss;
+		std::string ss = join(bounding_set, ",");
 		for (const auto &auth : bounding_set) {
 			dprintf(D_SECURITY|D_FULLDEBUG,
 				"Found SciToken condor authorization: %s\n",
 				auth.c_str());
-			ss << auth << ",";
 		}
-		ad.InsertAttr(ATTR_SEC_LIMIT_AUTHORIZATION, ss.str());
+		ad.InsertAttr(ATTR_SEC_LIMIT_AUTHORIZATION, ss);
 	}
 	mySock_->setPolicyAd(ad);
 	m_scitokens_auth_name = issuer + "," + subject;
@@ -1170,50 +1163,20 @@ Condor_Auth_SSL::server_verify_scitoken(CondorError* errstack)
 Condor_Auth_SSL::CondorAuthSSLRetval
 Condor_Auth_SSL::authenticate_finish(CondorError * /*errstack*/, bool /*non_blocking*/)
 {
-	char subjectname[1024];
 	Condor_Auth_SSL::CondorAuthSSLRetval retval = CondorAuthSSLRetval::Success;
 	setRemoteDomain( UNMAPPED_DOMAIN );
 	if (m_scitokens_mode) {
 		setRemoteUser("scitokens");
 		setAuthenticatedName( m_scitokens_auth_name.c_str() );
 	} else {
-		X509 *peer = SSL_get_peer_certificate_ptr(m_auth_state->m_ssl);
-		if (peer) {
-			BASIC_CONSTRAINTS *bs = nullptr;
-			PROXY_CERT_INFO_EXTENSION *pci = (PROXY_CERT_INFO_EXTENSION *)X509_get_ext_d2i(peer, NID_proxyCertInfo, NULL, NULL);
-			if (pci) {
-				PROXY_CERT_INFO_EXTENSION_free(pci);
-				STACK_OF(X509)* chain = nullptr;
-#if OPENSSL_VERSION_NUMBER < 0x10100000L || defined(LIBRESSL_VERSION_NUMBER)
-				chain = (*SSL_get_peer_cert_chain_ptr)(m_auth_state->m_ssl);
-#else
-				chain = (*SSL_get0_verified_chain_ptr)(m_auth_state->m_ssl);
-#endif
-				for (int n = 0; n < sk_X509_num(chain); n++) {
-					X509* cert = sk_X509_value(chain, n);
-					bs = (BASIC_CONSTRAINTS *)X509_get_ext_d2i(cert, NID_basic_constraints, NULL, NULL);
-					pci = (PROXY_CERT_INFO_EXTENSION *)X509_get_ext_d2i(cert, NID_proxyCertInfo, NULL, NULL);
-					if (!pci && !(bs && bs->ca)) {
-						X509_NAME_oneline(X509_get_subject_name(cert), subjectname, 1024);
-					}
-					if (bs) {
-						BASIC_CONSTRAINTS_free(bs);
-					}
-					if (pci) {
-						PROXY_CERT_INFO_EXTENSION_free(pci);
-					}
-				}
-				dprintf(D_SECURITY, "AUTHENTICATE: Peer's certificate is a proxy. Using identity '%s'\n", subjectname);
-			} else {
-				X509_NAME_oneline(X509_get_subject_name(peer), subjectname, 1024);
-			}
-			X509_free(peer);
-			setRemoteUser( "ssl" );
+		std::string subjectname = get_peer_identity(m_auth_state->m_ssl);
+		if (subjectname.empty()) {
+			setRemoteUser("unauthenticated");
+			setAuthenticatedName("unauthenticated");
 		} else {
-			strcpy(subjectname, "unauthenticated");
-			setRemoteUser( "unauthenticated" );
+			setRemoteUser("ssl");
+			setAuthenticatedName(subjectname.c_str());
 		}
-		setAuthenticatedName( subjectname );
 	}
 
 	dprintf(D_SECURITY,"SSL authentication succeeded to %s\n", getAuthenticatedName());
@@ -1747,9 +1710,28 @@ long Condor_Auth_SSL :: post_connection_check(SSL *ssl, int role )
        
 	if(role == AUTH_SSL_ROLE_SERVER) {
 		X509_free( cert );
+		long rc = SSL_get_verify_result_ptr( ssl );
+		if (rc == X509_V_OK && param_boolean("AUTH_SSL_REQUIRE_CLIENT_MAPPING", false)) {
+			std::string peer_dn = get_peer_identity(m_auth_state->m_ssl);
+			if (peer_dn.empty()) {
+				dprintf(D_SECURITY, "Client has no SSL authenticated identity, failing authentication to give another authentication method a go.\n");
+				return X509_V_ERR_APPLICATION_VERIFICATION;
+			}
+			std::string canonical_user;
+			Authentication::load_map_file();
+			auto global_map_file = Authentication::getGlobalMapFile();
+			bool mapFailed = true;
+			if (global_map_file != nullptr) {
+				mapFailed = global_map_file->GetCanonicalization("SSL", peer_dn, canonical_user);
+			}
+			if (mapFailed) {
+				dprintf(D_SECURITY, "Failed to map SSL authenticated identity '%s', failing authentication to give another authentication method a go.\n", peer_dn.c_str());
+				return X509_V_ERR_APPLICATION_VERIFICATION;
+			}
+		}
 		ouch("Server role: returning from post connection check.\n");
 
-		return SSL_get_verify_result_ptr( ssl );
+		return rc;
 	} // else ROLE_CLIENT: check dns (arg 2) against CN and the SAN
 
 	if (param_boolean("SSL_SKIP_HOST_CHECK", false)) {
@@ -1870,6 +1852,58 @@ err_occured:
     return X509_V_ERR_APPLICATION_VERIFICATION;
 }
 
+std::string Condor_Auth_SSL::get_peer_identity(SSL *ssl)
+{
+	char subjectname[1024] = "";
+	X509 *peer = SSL_get_peer_certificate_ptr(ssl);
+	if (peer) {
+		BASIC_CONSTRAINTS *bs = nullptr;
+		PROXY_CERT_INFO_EXTENSION *pci = (PROXY_CERT_INFO_EXTENSION *)X509_get_ext_d2i(peer, NID_proxyCertInfo, NULL, NULL);
+		if (pci) {
+			PROXY_CERT_INFO_EXTENSION_free(pci);
+			STACK_OF(X509)* chain = nullptr;
+#if OPENSSL_VERSION_NUMBER < 0x10100000L || defined(LIBRESSL_VERSION_NUMBER)
+			chain = SSL_get_peer_cert_chain_ptr(ssl);
+#else
+			chain = SSL_get0_verified_chain_ptr(ssl);
+#endif
+			for (int n = 0; n < sk_X509_num(chain); n++) {
+				X509* cert = sk_X509_value(chain, n);
+				bs = (BASIC_CONSTRAINTS *)X509_get_ext_d2i(cert, NID_basic_constraints, NULL, NULL);
+				pci = (PROXY_CERT_INFO_EXTENSION *)X509_get_ext_d2i(cert, NID_proxyCertInfo, NULL, NULL);
+				if (!pci && !(bs && bs->ca)) {
+					X509_NAME_oneline(X509_get_subject_name(cert), subjectname, sizeof(subjectname));
+				}
+				if (bs) {
+					BASIC_CONSTRAINTS_free(bs);
+				}
+				if (pci) {
+					PROXY_CERT_INFO_EXTENSION_free(pci);
+				}
+			}
+			char* voms_fqan = nullptr;
+			if (param_boolean("USE_VOMS_ATTRIBUTES", false) && param_boolean("AUTH_SSL_USE_VOMS_IDENTITY", true)) {
+				int voms_err = extract_VOMS_info(peer, chain, 1, nullptr, nullptr, &voms_fqan);
+				if (voms_err) {
+					dprintf(D_SECURITY|D_FULLDEBUG, "VOMS FQAN not present (error %d), ignoring.\n", voms_err);
+				}
+			}
+			if (voms_fqan) {
+				strncpy(subjectname, voms_fqan, sizeof(subjectname));
+				subjectname[sizeof(subjectname)-1] = '\0';
+				free(voms_fqan);
+				dprintf(D_SECURITY, "AUTHENTICATE: Peer's certificate is a proxy with VOMS attributes. Using identity '%s'\n", subjectname);
+			} else {
+				dprintf(D_SECURITY, "AUTHENTICATE: Peer's certificate is a proxy. Using identity '%s'\n", subjectname);
+			}
+		} else {
+			X509_NAME_oneline(X509_get_subject_name(peer), subjectname, sizeof(subjectname));
+		}
+		X509_free(peer);
+	}
+	return subjectname;
+}
+
 SSL_CTX *Condor_Auth_SSL :: setup_ssl_ctx( bool is_server )
 {
     SSL_CTX *ctx       = NULL;
@@ -1973,18 +2007,13 @@ SSL_CTX *Condor_Auth_SSL :: setup_ssl_ctx( bool is_server )
 	// otherwise, we will use the system default.
 
     if (cafile) {
-        StringList cafile_list(cafile, ",");
-        cafile_list.rewind();
-        char *ca;
-        while ((ca = cafile_list.next())) {
-            std::string ca_str(ca);
-            trim(ca_str);
+        for (const auto& ca_str : StringTokenIterator(cafile, ",")) {
             int fd = open(ca_str.c_str(), O_RDONLY);
             if (fd < 0) {
                 continue;
             }
             close(fd);
-            cafile_preferred_str = std::string(ca);
+            cafile_preferred_str = ca_str;
             cafile_preferred = cafile_preferred_str.c_str();
         }
     }
@@ -2002,37 +2031,31 @@ SSL_CTX *Condor_Auth_SSL :: setup_ssl_ctx( bool is_server )
         goto setup_server_ctx_err;
     }
     {
-        StringList certfile_list(certfile ? certfile : "", ",");
-        certfile_list.rewind();
-        StringList keyfile_list(keyfile ? keyfile : "", ",");
-        keyfile_list.rewind();
-        char *cert, *key;
+        StringTokenIterator certfile_list(certfile ? certfile : "", ",");
+        StringTokenIterator keyfile_list(keyfile ? keyfile : "", ",");
+        const char *cert, *key;
         while ((cert = certfile_list.next()))
         {
             if ((key = keyfile_list.next()) == nullptr) {
                 break;
             }
-            std::string cert_str(cert);
-            trim(cert_str);
-            std::string key_str(key);
-            trim(key_str);
             TemporaryPrivSentry sentry(PRIV_ROOT);
-            int fd = open(cert_str.c_str(), O_RDONLY);
+            int fd = open(cert, O_RDONLY);
             if (fd < 0) {
                 continue;
             }
             close(fd);
-            fd = open(key_str.c_str(), O_RDONLY);
+            fd = open(key, O_RDONLY);
             if (fd < 0) {
                 continue;
             }
             close(fd);
 
-            if( SSL_CTX_use_certificate_chain_file_ptr( ctx, cert_str.c_str() ) != 1 ) {
+            if( SSL_CTX_use_certificate_chain_file_ptr( ctx, cert ) != 1 ) {
                 ouch( "Error loading certificate from file\n" );
                 goto setup_server_ctx_err;
             }
-            if( SSL_CTX_use_PrivateKey_file_ptr( ctx, key_str.c_str(), SSL_FILETYPE_PEM) != 1 ) {
+            if( SSL_CTX_use_PrivateKey_file_ptr( ctx, key, SSL_FILETYPE_PEM) != 1 ) {
                 ouch( "Error loading private key from file\n" );
                 goto setup_server_ctx_err;
             }
@@ -2094,32 +2117,23 @@ Condor_Auth_SSL::should_try_auth()
 		return false;
 	}
 
-	StringList certfile_list(certfile, ",");
-	certfile_list.rewind();
-	StringList keyfile_list(keyfile, ",");
-	keyfile_list.rewind();
-	char *cert, *key;
+	StringTokenIterator certfile_list(certfile, ",");
+	StringTokenIterator keyfile_list(keyfile, ",");
+
 	std::string last_error;
-	while ((cert = certfile_list.next())) {
-		key = keyfile_list.next();
-		if (key == nullptr) {
-			last_error = formatstr(last_error, "No key to match the certificate %s", cert);
-			break;
-		}
-		std::string cert_str(cert);
-		std::string key_str(key);
+	for (const auto &[cert, key]: c9::zip(certfile_list, keyfile_list)) {
 		TemporaryPrivSentry sentry(PRIV_ROOT);
-		int fd = open(cert_str.c_str(), O_RDONLY);
+		int fd = open(cert.c_str(), O_RDONLY);
 		if (fd < 0) {
 			formatstr(last_error, "Not trying SSL auth because server certificate"
-				" (%s) is not readable by HTCondor: %s.\n", cert_str.c_str(), strerror(errno));
+				" (%s) is not readable by HTCondor: %s.\n", cert.c_str(), strerror(errno));
 			continue;
 		}
 		close(fd);
-		fd = open(key_str.c_str(), O_RDONLY);
+		fd = open(key.c_str(), O_RDONLY);
 		if (fd < 0) {
 			formatstr(last_error, "Not trying SSL auth because server key"
-				" (%s) is not readable by HTCondor: %s.\n", key_str.c_str(), strerror(errno));
+			          " (%s) is not readable by HTCondor: %s.\n", key.c_str(), strerror(errno));
 			continue;
 		}
 		close(fd);

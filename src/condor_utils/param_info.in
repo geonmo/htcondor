@@ -33,6 +33,10 @@
 ## metaknob names always start with $ and a category name.
 ##
 
+[DAEMON_CORE_KILL_ANY_PROCESS]
+default=false
+description=Allows DaemonCore to send signals to processes it didn't start.
+
 [MAX_DRAINING_ACTIVATION_DELAY]
 default=20
 description=When draining, how many seconds should a claimed slot wait to be activated?  Draining will be extended by this delay..
@@ -581,6 +585,12 @@ type=int
 tags=dagman,dagman_main
 restart=never
 
+[DAGMAN_CHECK_QUEUE_INTERVAL]
+default=28800
+type=int
+tags=dagman,dagman_main
+restart=never
+
 [MAX_DAGMAN_LOG]
 default=0
 type=int
@@ -744,7 +754,7 @@ tags=dagman,dagman_main
 restart=never
 
 [DAGMAN_SUPPRESS_NOTIFICATION]
-default=true
+default=false
 type=bool
 customization=normal
 tags=dagman,dagman_main
@@ -826,13 +836,8 @@ default=$(RELEASE_DIR)/include
 type=path
 
 [ETC]
-default=$(RELEASE_DIR)/etc
+default=$(LOCAL_DIR)
 type=path
-
-[XAUTHORITY_USERS]
-default=
-type=string
-tags=kbdd,XInterface
 
 [GROUP_NAMES]
 default=
@@ -956,6 +961,10 @@ tags=shadow,remoteresource
 
 [USE_VOMS_ATTRIBUTES]
 default=false
+type=bool
+
+[AUTH_SSL_USE_VOMS_IDENTITY]
+default=true
 type=bool
 
 [USE_NFS]
@@ -1121,6 +1130,10 @@ default=
 type=string
 tags=had,AbstractReplicatorStateMachine
 
+[TRANSFER_JOB_ATTRS]
+default=ClusterID, ProcID, NumShadowStarts
+type=string
+
 [MAX_TRANSFER_LIFETIME]
 default=300
 type=int
@@ -1161,17 +1174,27 @@ default=
 type=string
 tags=startd_factory
 
-[THINPOOL_BACKING_FILE]
+[LVM_USE_THIN_PROVISIONING]
+default=true
+type=bool
+tags=startd
+
+[LVM_BACKING_FILE]
 default=$(SPOOL)/startd_disk.img
 type=string
 tags=startd
 
-[THINPOOL_EXTRA_SIZE_MB]
+[LVM_BACKING_FILE_SIZE_MB]
+default=10240
+type=int
+tags=startd
+
+[LVM_THIN_LV_EXTRA_SIZE_MB]
 default=2000
 type=int
 tags=starter
 
-[THINPOOL_HIDE_MOUNT]
+[LVM_HIDE_MOUNT]
 default=false
 type=bool
 tags=startd
@@ -1780,7 +1803,7 @@ type=path
 tags=startd,starter_mgr
 
 [SINGULARITY]
-default=/usr/bin/singularity
+default=$(LIBEXEC)/apptainer
 win32_default=
 type=string
 reconfig=true
@@ -2016,6 +2039,23 @@ default=
 type=string
 tags=startd,startd_cronmgr
 
+[STARTD_DETECT_GPUS]
+default=-properties $(GPU_DISCOVERY_EXTRA)
+type=string
+tags=startd
+description=Enable GPUs as a resource and set arguments for condor_gpu_discovery when USE FEATURE:GPUs is not configured
+usage=configure to empty to disable default GPU discovery
+
+[ENVIRONMENT_FOR_AssignedGPUs]
+default=GPU_DEVICE_ORDINAL=/(CUDA|OCL)//  CUDA_VISIBLE_DEVICES=/CUDA//
+type=string
+tags=startd
+
+[ENVIRONMENT_VALUE_FOR_UnAssignedGPUs]
+default=10000
+type=string
+tags=startd
+
 [CLASSAD_USER_LIBS]
 default=
 type=string
@@ -2073,6 +2113,10 @@ description=Submit should generate requirements clauses for job attributes that 
 default=true
 type=bool
 tags=submit
+
+[SUBMIT_GENERATE_CONDOR_C_REQUIREMENTS]
+default=true
+type=bool
 
 [SUBMIT_DEFAULT_SHOULD_TRANSFER_FILES]
 description=Set the default value submit should use for should_transfer_files for jobs that don't specify
@@ -2458,13 +2502,13 @@ type=path
 tags=store_cred
 
 [SEC_PASSWORD_DIRECTORY]
-default=/etc/condor/passwords.d
+default=$(ETC)/passwords.d
 win32_default=$(RELEASE_DIR)\tokens.sk
 type=path
 tags=store_cred
 
 [SEC_TOKEN_SYSTEM_DIRECTORY]
-default=/etc/condor/tokens.d
+default=$(ETC)/tokens.d
 win32_default=$(RELEASE_DIR)\tokens.d
 type=path
 tags=condor_auth_passwd
@@ -2594,20 +2638,24 @@ type=path
 tags=condor_auth_ssl
 
 [AUTH_SSL_AUTOGENERATE_CERTFILE]
-default=/etc/condor/hostcert.pem
+default=$(ETC)/hostcert.pem
 win32_default=
 description=Location of the auto-generated host X509 certificate
 type=path
 tags=condor_auth_ssl
 
 [AUTH_SSL_AUTOGENERATE_KEYFILE]
-default=/etc/condor/hostkey.pem
+default=$(ETC)/hostkey.pem
 win32_default=
 description=Location of the auto-generated host private key
 type=path
 tags=condor_auth_ssl
 
 [AUTH_SSL_REQUIRE_CLIENT_CERTIFICATE]
+default=false
+type=bool
+
+[AUTH_SSL_REQUIRE_CLIENT_MAPPING]
 default=false
 type=bool
 
@@ -2635,19 +2683,19 @@ win32_default=false
 type=bool
 
 [TRUST_DOMAIN_CAFILE]
-default=/etc/condor/trust_domain_ca.pem
+default=$(ETC)/trust_domain_ca.pem
 win32_default=
 type=path
 tags=io,condor_auth_ssl
 
 [TRUST_DOMAIN_CAKEY]
-default=/etc/condor/trust_domain_ca_privkey.pem
+default=$(ETC)/trust_domain_ca_privkey.pem
 win32_default=
 type=path
 tags=io,condor_auth_ssl
 
 [SEC_SYSTEM_KNOWN_HOSTS]
-default=/etc/condor/known_hosts
+default=$(ETC)/known_hosts
 win32_default=$(LOCAL_DIR)\known_hosts
 type=path
 tags=io
@@ -2719,8 +2767,17 @@ type=string
 tags=starter
 
 [STARTER_NUM_THREADS_ENV_VARS]
-default=CUBACORES GOMAXPROCS JULIA_NUM_THREADS MKL_NUM_THREADS NUMEXPR_NUM_THREADS OMP_NUM_THREADS OMP_THREAD_LIMIT OPENBLAS_NUM_THREADS TF_LOOP_PARALLEL_ITERATIONS TF_NUM_THREADS
+default=CUBACORES GOMAXPROCS JULIA_NUM_THREADS MKL_NUM_THREADS NUMEXPR_NUM_THREADS OMP_NUM_THREADS OMP_THREAD_LIMIT OPENBLAS_NUM_THREADS PYTHON_CPU_COUNT ROOT_MAX_THREADS TF_LOOP_PARALLEL_ITERATIONS TF_NUM_THREADS
 type=string
+tags=starter
+
+[STARTER_HIDE_GPU_DEVICES]
+type=bool
+default=true
+
+[STARTER_FILE_XFER_STALL_TIMEOUT]
+type=int
+default=3600
 tags=starter
 
 [JOB_RENICE_INCREMENT]
@@ -3094,6 +3151,10 @@ tags=JobRouter
 default=false
 type=bool
 
+[JOB_ROUTER_USE_DEPRECATED_ROUTER_ENTRIES]
+default=false
+type=bool
+
 [POLLING_PERIOD]
 default=
 type=string
@@ -3412,7 +3473,7 @@ type=int
 tags=schedd
 
 [MAX_SHADOW_EXCEPTIONS]
-default=5
+default=2
 type=int
 tags=schedd
 
@@ -3470,11 +3531,6 @@ default=8
 type=int
 description=Maximum number of schedd forked workers
 tags=schedd
-
-[X_RUNS_HERE]
-default=
-type=string
-tags=master,daemon
 
 [HA_LOCK_URL]
 default=
@@ -4674,6 +4730,18 @@ type=string
 description=Location of default submit file for condor_submit -i
 tags=submit
 
+[INTERACTIVE_SUBMIT_CMD_OVERRIDE]
+default=/bin/sh
+type=string
+description=override CMD when -i is used with condor_submit <subfile>
+tags=submit
+
+[INTERACTIVE_SUBMIT_ARGS_OVERRIDE]
+default="-c 'sleep 180 && while test -d ${_CONDOR_SCRATCH_DIR}/.condor_ssh_to_job_1; do /bin/sleep 3; done'"
+type=string
+description=override ARGS when -i is used with condor_submit <subfile>
+tags=submit
+
 [MAX_GLOBAL_JOB_PRIOS]
 default=500
 version=7.9.1
@@ -4851,8 +4919,26 @@ default=gstat --all --mpifile --gmond_ip=localhost --gmond_port=8649
 type=string
 tags=condor_config
 
+[GANGLIAD_WANT_PROJECTION]
+default=false
+type=bool
+description=Should gangliad use an attribute projection to query the collector
+tags=gangliad
+
+[GANGLIAD_RESET_METRICS_FILE]
+default=$(SPOOL)/metricsToReset.ganglia_metrics
+type=path
+description=Path to filename where gangliad stores state
+tags=gangliad
+
+[GANGLIAD_WANT_RESET_METRICS]
+default=false
+type=bool
+description=Should gangliad reset aggregate metrics to zero on restart
+tags=gangliad
+
 [GANGLIAD_METRICS_CONFIG_DIR]
-default=/etc/condor/ganglia.d
+default=$(ETC)/ganglia.d
 type=path
 description=Ganglia metric config dir
 tags=condor_config
@@ -4951,6 +5037,11 @@ tags=schedd
 default=false
 type=bool
 description=Whether to invoke file transfer plugins as user or as root
+
+[LOG_FILETRANSFER_PLUGIN_STDOUT_ON_FAILURE]
+default=D_ALWAYS
+type=string
+description=What log level to use to write the stdout/err of a failed file transfer plugin into the StaterLog
 
 [ENABLE_MULTIFILE_TRANSFER_PLUGINS]
 default=true
@@ -5591,7 +5682,7 @@ default=
 type=string
 
 [LOCAL_CREDMON_TOKEN_VERSION]
-default=scitokens:2.0
+default=scitoken:2.0
 type=string
 
 
@@ -5883,6 +5974,10 @@ default=False
 description=Should condor_adstash query Startd job history
 type=bool
 default=False
+[ADSTASH_SCHEDD_JOB_EPOCH_HISTORY]
+description=Should condor_adstash query Schedd job epoch history
+type=bool
+default=False
 [ADSTASH_SCHEDD_HISTORY_MAX_ADS]
 description=Stop retrieving ads from a Schedd after this many ads per poll
 type=int
@@ -6010,8 +6105,8 @@ default : @end
 	KILL=False
 	MaxJobRetirementTime=0
 	CLAIM_WORKLIFE=
-	SLOTS_CONNECTED_TO_KEYBOARD=$(NUM_CPUS)
-	SLOTS_CONNECTED_TO_CONSOLE=$(NUM_CPUS)
+	SLOTS_CONNECTED_TO_KEYBOARD=1000000
+	SLOTS_CONNECTED_TO_CONSOLE=1000000
 	IS_OWNER=(START =?= False)
 @end
 
@@ -6089,7 +6184,7 @@ default : @end
 	NEGOTIATOR_POST_JOB_RANK=$(UWCS_NEGOTIATOR_POST_JOB_RANK)
 	MaxJobRetirementTime=$(UWCS_MaxJobRetirementTime)
 	CLAIM_WORKLIFE=$(UWCS_CLAIM_WORKLIFE)
-	SLOTS_CONNECTED_TO_KEYBOARD=$(NUM_CPUS)
+	SLOTS_CONNECTED_TO_KEYBOARD=1024*1024
 	IS_OWNER=(START =?= False)
 @end
 
@@ -6448,10 +6543,36 @@ win32_default=$(LIBEXEC)\condor_gpu_utilization.exe
 description=Settings to monitor GPU usage
 default : @end
 	use feature : Monitor( GPUs, WaitForExit, 300, $(GPU_MONITOR), SUM:GPUs, PEAK:GPUsMemory )
-	STARTD_CRON_GPUs_MONITOR_CONDITION = TotalGPUs > 0
+	STARTD_CRON_GPUs_MONITOR_CONDITION = TotalGPUs > 0 && OpSys =!= "WINDOWS"
 
 	STARTD_JOB_ATTRS = $(STARTD_JOB_ATTRS) GPUsUsage GPUsMemoryUsage
 @end
+
+[$FEATURE.PelicanCache]
+description=Configure a Pelican local cache daemon, args([size [, dir [,federation]]])  default: 256GB, $(LOCAL_DIR)/localcache, osg-htc.org
+default : @fin
+	# NOTE: This feature is still very experimental and could have bugs and unexpected behavior
+	PELICANCACHE=/usr/bin/pelican
+	DAEMON_LIST=$(DAEMON_LIST) PELICANCACHE
+	PELICANCACHE_LOG=$(LOG)/PelicanCacheLog
+	PELICANCACHE_SIZE=$(1:256GB)
+	PELICANCACHE_RUNLOCATION=$(2:$(LOCAL_DIR)/localcache)
+	PELICANCACHE_FEDERATION=$(3:osg-htc.org)
+	PELICANCACHE_HIGHWATERMARKPERCENTAGE=95
+	PELICANCACHE_LOWWATERMARKPERCENTAGE=85
+	# pass some args to the PELICANCACHE daemon in the environment and some in the args
+	PELICANCACHE_ARGS=serve -d --module localcache -l $(PELICANCACHE_LOG) -f $(PELICANCACHE_FEDERATION)
+	PELICANCACHE_ENVIRONMENT @=end
+	   PELICAN_SERVER_ENABLEUI=false
+	   PELICAN_LOCALCACHE_SIZE=$(PELICANCACHE_SIZE)
+	   PELICAN_LOCALCACHE_RUNLOCATION=$(PELICANCACHE_RUNLOCATION)
+	   PELICAN_LOCALCACHE_HIGHWATERMARKPERCENTAGE=$(PELICANCACHE_HIGHWATERMARKPERCENTAGE)
+	   PELICAN_LOCALCACHE_LOWWATERMARKPERCENTAGE=$(PELICANCACHE_LOWWATERMARKPERCENTAGE)
+	@end
+	# push an environment variable into the STARTD, which the STARTER and the transfer plugins will inherit
+	# we use the leading delimiter syntax here, with ; as the delimiter on all platforms
+	STARTD_ENVIRONMENT=;NEAREST_CACHE=unix:/$(PELICANCACHE_RUNLOCATION)/cache.sock;$(STARTD_ENVIRONMENT)
+@fin
 
 [$FEATURE.PartitionableSlot]
 description=Configure a partitionable slot, args:([type# [, allocation]])  default: 1, 100%

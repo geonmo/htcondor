@@ -13,18 +13,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import json
-import random
-import pprint
 import logging
-
-from pathlib import Path
-from operator import itemgetter
-from collections import defaultdict
 
 import opensearchpy
 
-import adstash.convert as convert
 from adstash.utils import get_host_port
 from adstash.interfaces.elasticsearch import ElasticsearchInterface
 
@@ -73,13 +65,13 @@ class OpenSearchInterface(ElasticsearchInterface):
         else:  # basic auth
             auth_tuple = (self.username, self.password,)
             client_options["http_auth"] = auth_tuple
-        
+
         if self.ca_certs is not None:
             client_options["ca_certs"] = self.ca_certs
         if self.use_https:
             client_options["verify_certs"] = True
 
-        client_options["request_timeout"] = self.timeout
+        client_options["timeout"] = self.timeout
 
         self.handle = opensearchpy.OpenSearch(**client_options)
         return self.handle

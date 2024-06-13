@@ -780,6 +780,10 @@ int BaseJob::EvalPeriodicJobExpr()
 			// possible), then picks it up as a new job from the schedd.
 			// So ignore release-from-hold and let the schedd deal with it.
 		break;
+	case VACATE_FROM_RUNNING:
+			// ignore this case, as we can't really handle it in the general
+			// case
+		break;
 	default:
 		EXCEPT( "Unknown action (%d) in BaseJob::EvalPeriodicJobExpr", 
 				action );
@@ -842,6 +846,10 @@ int BaseJob::EvalOnExitJobExpr()
 		break;
 	case REMOVE_FROM_QUEUE:
 		JobCompleted();
+		break;
+	case VACATE_FROM_RUNNING:
+			// ignore this case, as we can't really handle it in the general
+			// case
 		break;
 	default:
 		EXCEPT( "Unknown action (%d) in BaseJob::EvalAtExitJobExpr", 
@@ -1026,7 +1034,9 @@ WriteAbortEventToUserLog( ClassAd *job_ad )
 
 	JobAbortedEvent event;
 
-	job_ad->LookupString(ATTR_REMOVE_REASON, event.reason);
+	std::string reasonstr;
+	job_ad->LookupString(ATTR_REMOVE_REASON, reasonstr);
+	event.setReason(reasonstr);
 
 	int rc = ulog.writeEvent(&event,job_ad);
 
@@ -1124,6 +1134,8 @@ WriteTerminateEventToUserLog( ClassAd *job_ad )
 		event.run_remote_rusage.ru_stime.tv_sec = (time_t)real_val;
 		event.total_remote_rusage.ru_stime.tv_sec = (time_t)real_val;
 	}
+
+	setEventUsageAd(*job_ad, &event.pusageAd);
 
 	int rc = ulog.writeEvent(&event,job_ad);
 

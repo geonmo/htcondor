@@ -50,7 +50,7 @@ my $EXTRACT_TARBALLS_TASK = "remote_task-extract_tarballs";
 $| = 1;
 
 my $boos = 1; # build out of source
-if ($ENV{NMI_PLATFORM} =~ /AlmaLinux|AmazonLinux|CentOS|Fedora|Rocky|Debian|Ubuntu/) {
+if ($ENV{NMI_PLATFORM} =~ /AlmaLinux|AmazonLinux|CentOS|Fedora|openSUSE|Rocky|Debian|Ubuntu/) {
 	$boos = 0; # No need to shuffle stuff around streamlined builds
 }
 if ($boos) {
@@ -72,7 +72,7 @@ if ($boos) {
 		print FH 'mkdir sources\msconfig' . "\n";
 		print FH 'for %%I in (userdir\msconfig\*) do copy %%I sources\msconfig\%%~nxI' . "\n";
 		print FH 'move userdir\msconfig\WiX sources\msconfig\WiX' . "\n";
-		print FH '"sources\msconfig\tar.exe" -czf swap_userdir.tgz userdir/BUILD-ID userdir/nmi_tools userdir/src/condor_examples userdir/src/condor_tests' . "\n";
+		print FH '"sources\msconfig\tar.exe" -czf swap_userdir.tgz userdir/BUILD-ID userdir/GIT-SHA userdir/nmi_tools userdir/src/condor_examples userdir/src/condor_tests' . "\n";
 		print FH 'del userdir\condor-*.tgz' . "\n";
 		print FH 'for %%I in (userdir\*) do move %%I sources' . "\n";
 		print FH 'move userdir\src sources\src' . "\n";
@@ -91,7 +91,7 @@ if ($boos) {
 		print FH 'move userdir\externals sources\externals' . "\n";
 	} else {
 		print FH '#!/bin/sh' . "\n";
-		print FH 'tar czf swap_userdir.tgz userdir/BUILD-ID userdir/nmi_tools userdir/src/condor_examples userdir/src/condor_tests' . "\n";
+		print FH 'tar czf swap_userdir.tgz userdir/BUILD-ID userdir/GIT-SHA userdir/nmi_tools userdir/src/condor_examples userdir/src/condor_tests' . "\n";
 		print FH 'for file in userdir/*; do if [ -f "$file" ]; then mv "$file" sources; fi; done' . "\n";
 		print FH 'mv userdir/src sources' . "\n";
 		print FH 'mv userdir/bindings sources' . "\n";
@@ -130,7 +130,7 @@ if ($ENV{NMI_PLATFORM} =~ /_win/i) {
     print TASKLIST "$TAR_TESTS_TASK 4h\n";
     print TASKLIST "$RUN_UNIT_TESTS 4h\n";
 }    
-elsif ($ENV{NMI_PLATFORM} =~ /AlmaLinux|AmazonLinux|CentOS|Fedora|Rocky|Debian|Ubuntu/) {
+elsif ($ENV{NMI_PLATFORM} =~ /AlmaLinux|AmazonLinux|CentOS|Fedora|openSUSE|Rocky|Debian|Ubuntu/) {
     print TASKLIST "$NATIVE_TASK 4h\n";
     print TASKLIST "$CHECK_NATIVE_TASK 4h\n";
     print TASKLIST "$EXTRACT_TARBALLS_TASK 4h\n";

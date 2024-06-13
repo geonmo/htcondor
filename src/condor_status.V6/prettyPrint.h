@@ -91,7 +91,7 @@ class PrettyPrinter {
 		ppOption prettyPrintHeadings( bool any_ads );
 
 		int ppAdjustNameWidth( void * pv, Formatter * fmt ) const;
-		void prettyPrintAd( ppOption pps, ClassAd * ad, int output_index, StringList * whitelist, bool fHashOrder );
+		void prettyPrintAd( ppOption pps, ClassAd * ad, int output_index, classad::References * includelist, bool fHashOrder );
 
 		void printCustom( ClassAd * ad );
 		void ppInitPrintMask( ppOption pps, classad::References & proj, const char * & constr, bool no_pr_files );
@@ -108,10 +108,11 @@ class PrettyPrinter {
 		void ppSetAnyNormalCols();
 		void ppSetStartdOfflineCols();
 		void ppSetStartdAbsentCols();
+		void    ppSetStartDaemonCols( int width, const char * & constr );
 		void    ppSetStartdNormalCols( int width );
 		void           ppSetStateCols( int width );
 		void             ppSetRunCols( int width );
-		void            ppSetGPUsCols( int width, const char * & constr );
+		void            ppSetGPUsCols( int width, bool daemon_ad, const char * & constr );
 		void ppSetCollectorNormalCols( int width );
 		void  ppSetCkptSrvrNormalCols( int width );
 		void   ppSetStorageNormalCols( int width );
@@ -130,7 +131,7 @@ class PrettyPrinter {
 
 	public:
 		AttrListPrintMask           pm;
-		List<const char>			pm_head;
+		std::vector<const char *>	pm_head;
 		ppOption					ppStyle;
 		ppOption					ppTotalStyle;
 		printmask_headerfooter_t	pmHeadFoot;

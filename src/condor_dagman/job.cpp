@@ -20,20 +20,17 @@
 
 #include "condor_common.h"
 #include "job.h"
-#include "condor_string.h"
 #include "condor_debug.h"
-#include "dagman_main.h"
 #include "read_multiple_logs.h"
 #include "throttle_by_category.h"
 #include "dag.h"
-#include "dagman_metrics.h"
-#include <set>
 #include <forward_list>
 
 static const char *JOB_TAG_NAME = "+job_tag_name";
 static const char *PEGASUS_SITE = "+pegasus_site";
 
 StringSpace Job::stringSpace;
+time_t Job::lastStateChangeTime;
 
 //---------------------------------------------------------------------------
 JobID_t Job::_jobID_counter = 0;  // Initialize the static data memeber
@@ -309,6 +306,8 @@ Job::SetProcIsIdle( int proc, bool isIdle )
 		proc = 0;
 	}
 
+	SetStateChangeTime();
+
 	if (proc >= static_cast<int>(_gotEvents.size())) {
 		_gotEvents.resize(proc + 1, 0);
 	}
@@ -326,6 +325,8 @@ Job::SetProcEvent( int proc, int event )
 	if ( GetNoop() ) {
 		proc = 0;
 	}
+
+	SetStateChangeTime();
 
 	if (proc >= static_cast<int>(_gotEvents.size())) {
 			_gotEvents.resize(proc + 1, 0);
@@ -353,13 +354,7 @@ int Job::CountChildren() const
 		if (_multiple_children) {
 			Edge * edge = Edge::ById(_child);
 			ASSERT(edge);
-		#if 1 // if the child list has a size method
 			count = (int)edge->size();
-		#else // if it does not
-			for (auto it = edge->_children.begin(); it != edge->_children.end(); ++it) {
-				++count;
-			}
-		#endif
 		} else {
 			count = 1;
 		}
@@ -570,13 +565,19 @@ Job::CanAddParent( Job* parent, std::string &whynot )
 		whynot = "parent == NULL";
 		return false;
 	}
-	if( GetType() == NodeType::FINAL ) {
-		whynot = "Tried to add a parent to a Final node";
-		return false;
-	}
-	if( GetType() == NodeType::SERVICE ) {
-		whynot = "Tried to add a parent to a SERVICE node";
-		return false;
+
+	switch(GetType()) {
+		case NodeType::FINAL:
+			whynot = "Tried to add a parent to a Final node";
+			return false;
+		case NodeType::PROVISIONER:
+			whynot = "Tried to add parent to the PROVISIONER node";
+			return false;
+		case NodeType::SERVICE:
+			whynot = "Tried to add a parent to a SERVICE node";
+			return false;
+		default:
+			break;
 	}
 
 		// we don't currently allow a new parent to be added to a
@@ -596,17 +597,18 @@ Job::CanAddParent( Job* parent, std::string &whynot )
 
 bool Job::CanAddChildren(std::forward_list<Job*> & children, std::string &whynot)
 {
-	if ( GetType() == NodeType::FINAL ) {
-		whynot = "Tried to add a child to a final node";
-		return false;
-	}
-	if ( GetType() == NodeType::PROVISIONER ) {
-		whynot = "Tried to add a child to a provisioner node";
-		return false;
-	}
-	if ( GetType() == NodeType::SERVICE ) {
-		whynot = "Tried to add a child to a SERVICE node";
-		return false;
+	switch(GetType()) {
+		case NodeType::FINAL:
+			whynot = "Tried to add a child to a Final node";
+			return false;
+		case NodeType::PROVISIONER:
+			whynot = "Tried to add child to the PROVISIONER node";
+			return false;
+		case NodeType::SERVICE:
+			whynot = "Tried to add a child to a SERVICE node";
+			return false;
+		default:
+			break;
 	}
 
 	for (auto child : children) {
@@ -628,7 +630,7 @@ bool Job::AddVar(const char *name, const char *value, const char * filename, int
 		// because we dedup the names, we can just compare the pointers here.
 		if (name == it->_name) {
 			debug_printf(DEBUG_NORMAL, "Warning: VAR \"%s\" "
-				"is already defined in job \"%s\" "
+				"is already defined in node \"%s\" "
 				"(Discovered at file \"%s\", line %d)\n",
 					name, GetJobName(), filename, lineno);
 				check_warning_strictness(DAG_STRICT_3);
@@ -840,54 +842,38 @@ Job::TerminateFailure()
 } 
 
 bool
-Job::AddScript( ScriptType script_type, const char *cmd, int defer_status, time_t defer_time, std::string &whynot )
+Job::AddScript(Script* script)
 {
-	if( !cmd || strcmp( cmd, "" ) == 0 ) {
-		whynot = "missing script name";
-		return false;
-	}
+	if(! script) { return false; }
+
+	script->SetNode(this);
 
 	// Check if a script of the same type has already been assigned to this node
 	const char *old_script_name = NULL;
 	const char *type_name;
-	switch( script_type ) {
+	switch(script->GetType()) {
 		case ScriptType::PRE:
 			old_script_name = GetPreScriptName();
 			type_name = "PRE";
+			_scriptPre = script;
 			break;
 		case ScriptType::POST:
 			old_script_name = GetPostScriptName();
 			type_name = "POST";
+			_scriptPost = script;
 			break;
 		case ScriptType::HOLD:
 			old_script_name = GetHoldScriptName();
 			type_name = "HOLD";
+			_scriptHold = script;
 			break;
 	}
 	if( old_script_name ) {
 		debug_printf( DEBUG_NORMAL,
 			"Warning: node %s already has %s script <%s> assigned; changing "
-			"to <%s>\n", GetJobName(), type_name, old_script_name, cmd );
+			"to <%s>\n", GetJobName(), type_name, old_script_name, script->GetCmd());
 	}
 
-	Script* script = new Script( script_type, cmd, defer_status, defer_time, this );
-	if( !script ) {
-		dprintf( D_ALWAYS, "ERROR: out of memory!\n" );
-			// we already know we're out of memory, so filling in
-			// whynot will likely fail, but give it a shot...
-		whynot = "out of memory!";
-		return false;
-	}
-	if( script_type == ScriptType::POST ) {
-		_scriptPost = script;
-	}
-	else if( script_type == ScriptType::PRE ) {
-		_scriptPre = script;
-	}
-	else if( script_type == ScriptType::HOLD ) {
-		_scriptHold = script;
-	}
-	whynot = "n/a";
 	return true;
 }
 
@@ -1067,6 +1053,7 @@ Job::SetCondorID(const CondorID& cid)
 bool
 Job::Hold(int proc) 
 {
+	SetStateChangeTime();
 	if (proc >= static_cast<int>(_gotEvents.size())) {
 		_gotEvents.resize(proc + 1, 0);
 	}
@@ -1087,6 +1074,7 @@ Job::Hold(int proc)
 bool
 Job::Release(int proc)
 {
+	SetStateChangeTime();
 	//PRAGMA_REMIND("tj: this should also test the flags, not just the vector size")
 	if (proc >= static_cast<int>(_gotEvents.size())) {
 		dprintf(D_FULLDEBUG, "Received release event for node %s, but job %d.%d "
@@ -1122,4 +1110,43 @@ Job::Cleanup()
 
 	std::vector<unsigned char> s2;
 	_gotEvents.swap(s2); // Free memory in _gotEvents
+}
+
+//---------------------------------------------------------------------------
+/*
+	Verify internal job states agree with queue query such that jobs found in
+	queue don't have ABORT_TERM_MASK and jobs not found in queue do have ABORT_TERM_MASK
+	return True for everything matches
+	return False for one job has differring state
+*/
+bool Job::VerifyJobStates(std::set<int>& queuedJobs) {
+	bool good_state = true;
+	int proc = 0;
+	int cluster = GetCluster();
+	const char* nodeName = GetJobName();
+
+	if (_gotEvents.size() == 0) {
+		debug_printf(DEBUG_NORMAL, "ERROR: Node %s is internally in submitted state with no recorded job events!\n",
+		             nodeName);
+		return false;
+	}
+
+	for (auto& state : _gotEvents) {
+		if (queuedJobs.contains(proc)) {
+			if (state & ABORT_TERM_MASK) {
+				debug_printf(DEBUG_NORMAL,
+				             "ERROR: Node %s (%d.%d) located in queue but internally marked as exited.\n",
+				             nodeName, cluster, proc);
+				good_state = false;
+			}
+		} else if ( ! (state & ABORT_TERM_MASK)) { // If abort/term mask bit not set
+			debug_printf(DEBUG_NORMAL,
+			             "ERROR: Node %s (%d.%d) not located in queue and not internally marked as exited.\n",
+			             nodeName, cluster, proc);
+			good_state = false;
+		}
+		proc++;
+	}
+
+	return good_state;
 }

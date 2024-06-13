@@ -31,12 +31,12 @@
 #include "job.h"
 #include "parse.h"
 #include "debug.h"
-#include "util_lib_proto.h"
 #include "dagman_commands.h"
-#include "dagman_main.h"
 #include "tmp_dir.h"
 #include "basename.h"
 #include "condor_getcwd.h"
+
+namespace deep = DagmanDeepOptions;
 
 static const char   COMMENT    = '#';
 static const char * DELIMITERS = " \t";
@@ -85,7 +85,7 @@ static bool parse_priority(Dag *dag,
 		const char *filename, int lineNumber);
 static bool parse_category(Dag *dag, const char *filename, int lineNumber);
 static bool parse_maxjobs(Dag *dag, const char *filename, int lineNumber);
-static bool parse_splice(Dag *dag, const char *filename, int lineNumber);
+static bool parse_splice(const Dagman& dm, Dag *dag, const char *filename, int lineNumber);
 static bool parse_node_status_file(Dag  *dag, const char *filename,
 		int  lineNumber);
 static bool parse_save_point_file(Dag *dag, const char* filename, int lineNumber);
@@ -99,7 +99,7 @@ static bool parse_done(Dag  *dag, const char *filename, int  lineNumber);
 static bool parse_connect( Dag  *dag, const char *filename, int  lineNumber );
 static bool parse_pin_in_out( Dag  *dag, const char *filename,
 			int  lineNumber, bool isPinIn );
-static bool parse_include( Dag  *dag, const char *filename, int  lineNumber );
+static bool parse_include(const Dagman& dm, Dag  *dag, const char *filename, int  lineNumber );
 static std::string munge_job_name(const char *jobName);
 
 static std::string current_splice_scope(void);
@@ -114,7 +114,7 @@ void exampleSyntax (const char * example) {
 bool
 isReservedWord( const char *token )
 {
-    static const char * keywords[] = { "PARENT", "CHILD", Dag::ALL_NODES };
+    static const char * keywords[] = { "PARENT", "CHILD", DAG::ALL_NODES };
     for (auto & keyword : keywords) {
         if (!strcasecmp (token, keyword)) {
     		debug_printf( DEBUG_QUIET,
@@ -171,8 +171,7 @@ int parse_up_to_close_brace(SubmitHash & hash, MacroStream &ms, std::string & er
 
 
 //-----------------------------------------------------------------------------
-bool parse(Dag *dag, const char *filename, bool useDagDir,
-			DCSchedd *schedd, bool appendVars, bool incrementDagNum )
+bool parse(const Dagman& dm, Dag *dag, const char * filename, bool incrementDagNum)
 {
 	ASSERT( dag != NULL );
 
@@ -180,10 +179,10 @@ bool parse(Dag *dag, const char *filename, bool useDagDir,
 		++_thisDagNum;
 	}
 
-	_useDagDir = useDagDir;
-	_useDirectSubmit = param_boolean("DAGMAN_USE_DIRECT_SUBMIT", true);
-	_appendVars = appendVars;
-	_schedd = schedd;
+	_useDagDir = dm.options[deep::b::UseDagDir];
+	_useDirectSubmit = dm.options[deep::i::SubmitMethod] == 1;
+	_appendVars = dm.doAppendVars;
+	_schedd = dm._schedd;
 
 		//
 		// If useDagDir is true, we have to cd into the directory so we can
@@ -193,7 +192,7 @@ bool parse(Dag *dag, const char *filename, bool useDagDir,
 	const char *	tmpFilename = filename;
 	TmpDir		dagDir;
 
-	if ( useDagDir ) {
+	if ( _useDagDir ) {
 		tmpDirectory = condor_dirname( filename );
 
 		std::string	errMsg;
@@ -294,7 +293,7 @@ bool parse(Dag *dag, const char *filename, bool useDagDir,
 					}
 					dag->SubmitDescriptions.insert(std::make_pair(std::string(nodename.c_str()), new SubmitHash()));
 					SubmitHash* submitDesc = dag->SubmitDescriptions.at(std::string(nodename.c_str()));
-					submitDesc->init();
+					submitDesc->init(JSM_DAGMAN);
 					submitDesc->setDisableFileChecks(true);
 					std::string errmsg;
 					char * stopline = NULL;
@@ -354,7 +353,7 @@ bool parse(Dag *dag, const char *filename, bool useDagDir,
 					}
 					dag->SubmitDescriptions.insert(std::make_pair(std::string(nodename.c_str()), new SubmitHash()));
 					SubmitHash* submitDesc = dag->SubmitDescriptions.at(std::string(nodename.c_str()));
-					submitDesc->init();
+					submitDesc->init(JSM_DAGMAN);
 					submitDesc->setDisableFileChecks(true);
 					std::string errmsg;
 					char * stopline = NULL;
@@ -401,7 +400,7 @@ bool parse(Dag *dag, const char *filename, bool useDagDir,
 
 		// Handle a Splice spec
 		else if(strcasecmp(token, "SPLICE") == 0) {
-			parsed_line_successfully = parse_splice(dag, filename,
+			parsed_line_successfully = parse_splice(dm, dag, filename,
 						lineNumber);
 		}
 
@@ -431,7 +430,7 @@ bool parse(Dag *dag, const char *filename, bool useDagDir,
 					}
 					dag->SubmitDescriptions.insert(std::make_pair(std::string(descName.c_str()), new SubmitHash()));
 					SubmitHash* submitDesc = dag->SubmitDescriptions.at(descName.c_str());
-					submitDesc->init();
+					submitDesc->init(JSM_DAGMAN);
 					submitDesc->setDisableFileChecks(true);
 					std::string errmsg;
 					char * stopline = NULL;
@@ -721,7 +720,7 @@ bool parse(Dag *dag, const char *filename, bool useDagDir,
 
 		// Handle a INCLUDE spec
 		else if(strcasecmp(token, "INCLUDE") == 0) {
-			parsed_line_successfully = parse_include( dag,
+			parsed_line_successfully = parse_include(dm, dag,
 						filename, lineNumber );
 		}
 
@@ -783,7 +782,7 @@ bool parse(Dag *dag, const char *filename, bool useDagDir,
 	dag->LiftSplices(SELF);
 	dag->RecordInitialAndTerminalNodes();
 	
-	if ( useDagDir ) {
+	if ( _useDagDir ) {
 		std::string	errMsg;
 		if ( !dagDir.Cd2MainDir( errMsg ) ) {
 			debug_printf( DEBUG_QUIET,
@@ -1015,16 +1014,10 @@ parse_node( Dag *dag, const char * nodeName, const char * submitFileOrSubmitDesc
 			submitFileOrSubmitDesc = dagSubmitFile.c_str();
 
 		} else if ( strstr( submitFileOrSubmitDesc, DAG_SUBMIT_FILE_SUFFIX) ) {
-				// If the submit file name ends in ".condor.sub", we assume
-				// that this node is a nested DAG, and set the DAG filename
-				// accordingly.
-			nestedDagFile = submitFileOrSubmitDesc;
-			nestedDagFile.replace( nestedDagFile.find(DAG_SUBMIT_FILE_SUFFIX), 
-				sizeof(DAG_SUBMIT_FILE_SUFFIX) - 1, "" );
-			debug_printf( DEBUG_NORMAL, "Warning: the use of the JOB "
-						"keyword for nested DAGs is deprecated; please "
-						"use SUBDAG EXTERNAL instead\n" );
-			check_warning_strictness( DAG_STRICT_3 );
+			// Assume JOB commands submit file ending with '.condor.sub' is a DAG
+			// submit file. This is no longer allowed for subdags
+			debug_printf(DEBUG_NORMAL, "Error: The use of the JOB keyword for nested DAGs is prohibited.\n");
+			return false;
 		}
 	}
 
@@ -1072,7 +1065,7 @@ parse_script(
 	const char *filename, 
 	int  lineNumber)
 {
-	const char * example = "SCRIPT [DEFER status time] (PRE|POST|HOLD) JobName Script Args ...";
+	const char * example = "SCRIPT [DEFER status time] [DEBUG file (STDOUT|STDERR|ALL)] (PRE|POST|HOLD) JobName Script Args ...";
 
 	//
 	// Second keyword is either PRE, POST or DEFER
@@ -1129,9 +1122,48 @@ parse_script(
 		type_name = strtok( NULL, DELIMITERS );
 		if ( !type_name ) {
 			debug_printf( DEBUG_QUIET,
-						"ERROR: %s (line %d): Missing PRE, POST or HOLD\n",
+						"ERROR: %s (line %d): Missing PRE, POST, HOLD or optional DEBUG\n",
 						filename, lineNumber );
 			exampleSyntax( example );
+			return false;
+		}
+	}
+
+	DagScriptOutput debugType = DagScriptOutput::NONE;
+	std::string debugFile;
+	if (strcasecmp(type_name, "DEBUG") == MATCH) {
+		const char* token = strtok(NULL, DELIMITERS);
+		if ( ! token) {
+			debug_printf(DEBUG_QUIET, "ERROR: %s (line %d): Script DEBUG missing filename\n",
+			             filename, lineNumber);
+			exampleSyntax(example);
+			return false;
+		}
+		debugFile = token;
+		token = strtok(NULL, DELIMITERS);
+		if ( ! token) {
+			debug_printf(DEBUG_QUIET, "ERROR: %s (line %d): Script DEBUG missing output stream type (STDOUT,STDERR,ALL)\n",
+			             filename, lineNumber);
+			exampleSyntax(example);
+			return false;
+		}
+		if (strcasecmp(token, "STDOUT") == MATCH) {
+			debugType = DagScriptOutput::STDOUT;
+		} else if (strcasecmp(token, "STDERR") == MATCH) {
+			debugType = DagScriptOutput::STDERR;
+		} else if (strcasecmp(token, "ALL") == MATCH) {
+			debugType = DagScriptOutput::ALL;
+		} else {
+			debug_printf(DEBUG_QUIET, "ERROR: %s (line %d): Unknown Script output stream type (%s) expected STDOUT, STDERR, or ALL\n",
+			            filename, lineNumber, token);
+			exampleSyntax(example);
+			return false;
+		}
+		type_name = strtok(NULL, DELIMITERS);
+		if ( ! type_name) {
+			debug_printf(DEBUG_QUIET, "ERROR: %s (line %d): Missing PRE, POST or HOLD\n",
+						filename, lineNumber);
+			exampleSyntax(example);
 			return false;
 		}
 	}
@@ -1225,13 +1257,16 @@ parse_script(
 				filename, lineNumber ) ) ) {
 		jobName = NULL;
 
-		std::string whynot;
-			// This fails if the node already has a script.
-		if( !job->AddScript( scriptType, rest, defer_status, defer_time, whynot ) ) {
-			debug_printf( DEBUG_SILENT, "ERROR: %s (line %d): "
-					  	"failed to add %s script to node %s: %s\n",
-					  	filename, lineNumber, type_name,
-					  	job->GetJobName(), whynot.c_str() );
+		Script* script = new Script(scriptType, rest, defer_status, defer_time);
+		if(! script) {
+			debug_printf(DEBUG_SILENT, "ERROR: Failed to make script object: out of memory!\n");
+			return false;
+		}
+		if (debugType != DagScriptOutput::NONE)
+			script->SetDebug(debugFile, debugType);
+		if(! job->AddScript(script)) {
+			debug_printf(DEBUG_SILENT, "ERROR: %s (line %d): failed to add %s script to node %s\n",
+			             filename, lineNumber, type_name, job->GetJobName());
 			return false;
 		}
 	}
@@ -1427,6 +1462,7 @@ parse_parent(
 				" node \"%s\" and child nodes : %s\n",
 				filename, lineNumber, parent_type,
 				parent->GetJobName(), failReason.c_str());
+			return false;
 		}
 	}
 	return true;
@@ -2049,6 +2085,7 @@ parse_category(
 //-----------------------------------------------------------------------------
 static bool
 parse_splice(
+	const Dagman& dm,
 	Dag *dag,
 	const char *filename,
 	int lineNumber)
@@ -2147,25 +2184,7 @@ parse_splice(
 	// This "copy" is tailored to be correct according to Dag::~Dag()
 	// We can pass in NULL for submitDagOpts because the splice DAG
 	// object will never actually do a submit.  wenger 2010-03-25
-	splice_dag = new Dag(	dag->DagFiles(),
-							dag->MaxJobsSubmitted(),
-							dag->MaxPreScripts(),
-							dag->MaxPostScripts(),
-							dag->MaxHoldScripts(),
-							dag->UseDagDir(),
-							dag->MaxIdleJobProcs(),
-							dag->RetrySubmitFirst(),
-							dag->RetryNodeFirst(),
-							dag->CondorRmExe(),
-							dag->DAGManJobId(),
-							dag->ProhibitMultiJobs(),
-							dag->SubmitDepthFirst(),
-							dag->DefaultNodeLog(),
-							dag->GenerateSubdagSubmits(),
-							NULL, // this Dag will never submit a job
-							true, /* we are a splice! */
-							_schedd,
-							current_splice_scope() );
+	splice_dag = new Dag(dm, true, current_splice_scope());
 	
 	// initialize whatever the DIR line was, or defaults to, here.
 	splice_dag->SetDirectory(directory);
@@ -2186,7 +2205,7 @@ parse_splice(
 	}
 
 	// parse the splice file into a separate dag.
-	if (!parse(splice_dag, spliceFile.c_str(), _useDagDir, _schedd, _appendVars, false)) {
+	if (!parse(dm, splice_dag, spliceFile.c_str(), false)) {
 		debug_error(1, DEBUG_QUIET, "ERROR: Failed to parse splice %s in file %s\n",
 			spliceName.c_str(), spliceFile.c_str());
 		delete splice_dag;
@@ -2414,7 +2433,7 @@ parse_save_point_file(Dag *dag, const char* filename, int lineNumber)
 					 filename, lineNumber);
 		exampleSyntax(example.c_str());
 		return false;
-	} else if (strcasecmp(jobName,dag->ALL_NODES) == MATCH) { //It is redundant to use all nodes for save files
+	} else if (strcasecmp(jobName, DAG::ALL_NODES) == MATCH) { //It is redundant to use all nodes for save files
 		debug_printf(DEBUG_NORMAL, "ERROR: %s (line %d): SAVE_POINT_FILE does not allow ALL_NODES option.\n",
 					 filename, lineNumber);
 		exampleSyntax(example.c_str());
@@ -2841,6 +2860,7 @@ parse_pin_in_out(
 //-----------------------------------------------------------------------------
 static bool 
 parse_include(
+	const Dagman& dm,
 	Dag  *dag, 
 	const char *filename, 
 	int  lineNumber )
@@ -2875,7 +2895,7 @@ parse_include(
 		// include file path is always relative to the submit directory,
 		// *not* relative to the DAG file's directory, even if
 		// 'condor_submit -usedagdir' is specified.
-	return parse( dag, tmpFilename.c_str(), false, _schedd, _appendVars, false);
+	return parse(dm, dag, tmpFilename.c_str(), false);
 }
 
 static std::string munge_job_name(const char *jobName)

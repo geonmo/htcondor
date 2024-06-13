@@ -22,7 +22,6 @@
 #define JOB_H
 
 #include "condor_common.h"      /* for <stdio.h> */
-#include "simplelist.h"         /* from condor_utils/ directory */
 #include "condor_id.h"
 #include "throttle_by_category.h"
 #include "read_multiple_logs.h"
@@ -180,8 +179,7 @@ class Job {
 	//remove event. Otherwise if queued nodes is 0 then all job procs are done
 	inline bool AllProcsDone() const { return !is_factory && _queuedNodeJobProcs == 0; }
 
-	bool AddScript( ScriptType script_type, const char *cmd, int defer_status,
-				time_t defer_time, std::string &whynot );
+	bool AddScript(Script* script);
 	bool AddPreSkip( int exitCode, std::string &whynot );
 
 	void SetType( NodeType type ) { _type = type; }
@@ -462,6 +460,35 @@ public:
 	// Indicates that this node is going to write a save point file.
 	bool _isSavePoint;
 
+	void SetNumSubmitted(int num) { numJobsSubmitted = num; }
+	int NumSubmitted() const { return numJobsSubmitted; }
+
+	void IncrementJobsAborted() { numJobsAborted++; }
+	int JobsAborted() const { return numJobsAborted; }
+
+	// Indicate that at this point the node is considered failed
+	void MarkFailed() { isSuccessful = false; }
+	// Check if the node is considered failed/success at point in time
+	bool IsSuccessful() const { return isSuccessful; }
+
+	void CountJobExitCode(int code) {
+		if (exitCodeCounts.contains(code)) {
+			exitCodeCounts[code]++;
+		} else {
+			exitCodeCounts[code] = 1;
+		}
+	}
+
+	const std::map<int, int>& JobExitCodes() const { return exitCodeCounts; }
+
+	void ResetJobInfo() {
+		_numSubmittedProcs = 0;
+		numJobsSubmitted = 0;
+		numJobsAborted = 0;
+		isSuccessful = true;
+		exitCodeCounts.clear();
+	}
+
 private:
 		// Whether this is a noop job (shouldn't actually be submitted
 		// to HTCondor).
@@ -470,6 +497,12 @@ private:
 	bool _hold;
 		// What type of node (job, final, provisioner)
 	NodeType _type;
+
+	bool isSuccessful{true}; // Is Node currently successful or not
+
+	int numJobsSubmitted{0}; // Number of submitted jobs
+	int numJobsAborted{0}; // Number of jobs with abort events
+
 public:
 
 	struct NodeVar {
@@ -524,6 +557,14 @@ public:
 		*/
 	bool Release(int proc);
 
+	// Get Shared Node time of the last state change
+	static time_t GetLastStateChange() { return lastStateChangeTime; }
+
+	// Check internal Job states against returned queue query results
+	bool VerifyJobStates(std::set<int>& queuedJobs);
+
+	bool missingJobs{false};
+
 	static const char * dedup_str(const char* str) { return stringSpace.strdup_dedup(str); }
 
 private:
@@ -561,6 +602,8 @@ private:
 
 	// Filename to write save point rescue file as
 	std::string _saveFile;
+
+	std::map<int, int> exitCodeCounts; // Exit Code : Number of jobs that returned code
 
     /** */ status_t _Status;
 
@@ -629,6 +672,9 @@ private:
 	 *  (for debugging).
 	*/
 	void PrintProcIsIdle();
+
+	static void SetStateChangeTime() { time(&lastStateChangeTime); }
+	static time_t lastStateChangeTime;
 };
 
 struct SortJobsById

@@ -25,7 +25,6 @@
 #include "condor_debug.h"
 #include "condor_config.h"
 #include "condor_attributes.h"
-#include "condor_api.h"
 #include "condor_classad.h"
 #include "condor_query.h"
 #include "daemon.h"
@@ -40,13 +39,11 @@
 #include "condor_daemon_core.h"
 #include "selector.h"
 #include "consumption_policy.h"
-#include "condor_classad.h"
 #include "subsystem_info.h"
 #include "authentication.h"
 
 #include <vector>
 #include <string>
-#include <sstream>
 #include <deque>
 
 #if defined(WANT_CONTRIB) && defined(WITH_MANAGEMENT) && defined(UNIX)
@@ -267,7 +264,7 @@ bool dslotLookup( const classad::ClassAd *ad, const char *name, int idx, classad
 	if ( (unsigned)idx >= expr_list.size() ) {
 		return false;
 	}
-	if ( expr_list[idx]->GetKind() != classad::ExprTree::LITERAL_NODE ) {
+	if (dynamic_cast<classad::Literal *>(expr_list[idx]) == nullptr) {
 		return false;
 	}
 	((classad::Literal*)expr_list[idx])->GetValue( value );
@@ -722,40 +719,28 @@ reinitialize ()
 		dprintf (D_ALWAYS,"PREEMPTION_REQUIREMENTS = None\n");
 	}
 
-	NegotiatorMatchExprNames.clearAll();
-	NegotiatorMatchExprValues.clearAll();
+	NegotiatorMatchExprs.clear();
 	tmp = param("NEGOTIATOR_MATCH_EXPRS");
 	if( tmp ) {
-		NegotiatorMatchExprNames.initializeFromString( tmp );
-		free( tmp );
-		tmp = NULL;
-
+		for (const auto& expr_name: StringTokenIterator(tmp)) {
 			// Now read in the values of the macros in the list.
-		NegotiatorMatchExprNames.rewind();
-		char const *expr_name;
-		while( (expr_name=NegotiatorMatchExprNames.next()) ) {
-			char *expr_value = param( expr_name );
-			if( !expr_value ) {
-				dprintf(D_ALWAYS,"Warning: NEGOTIATOR_MATCH_EXPRS references a macro '%s' which is not defined in the configuration file.\n",expr_name);
-				NegotiatorMatchExprNames.deleteCurrent();
+			char* expr_value = param(expr_name.c_str());
+			if (!expr_value ) {
+				dprintf(D_ALWAYS, "Warning: NEGOTIATOR_MATCH_EXPRS references a macro '%s' which is not defined in the configuration file.\n", expr_name.c_str());
 				continue;
 			}
-			NegotiatorMatchExprValues.append( expr_value );
-			free( expr_value );
-		}
-
 			// Now change the names of the ExprNames so they have the prefix
 			// "MatchExpr" that is expected by the schedd.
-		size_t prefix_len = strlen(ATTR_NEGOTIATOR_MATCH_EXPR);
-		NegotiatorMatchExprNames.rewind();
-		while( (expr_name=NegotiatorMatchExprNames.next()) ) {
-			if( strncmp(expr_name,ATTR_NEGOTIATOR_MATCH_EXPR,prefix_len) != 0 ) {
-				std::string new_name = ATTR_NEGOTIATOR_MATCH_EXPR;
-				new_name += expr_name;
-				NegotiatorMatchExprNames.insert(new_name.c_str());
-				NegotiatorMatchExprNames.deleteCurrent();
+			std::string new_name;
+			if (!expr_name.starts_with(ATTR_NEGOTIATOR_MATCH_EXPR)) {
+				new_name = ATTR_NEGOTIATOR_MATCH_EXPR;
 			}
+			new_name += expr_name;
+			NegotiatorMatchExprs.emplace(new_name, expr_value);
+			free(expr_value);
 		}
+		free( tmp );
+		tmp = NULL;
 	}
 
 	dprintf (D_ALWAYS,"ACCOUNTANT_HOST = %s\n", AccountantHost ?
@@ -1120,8 +1105,8 @@ SET_PRIORITYFACTOR_commandHandler (int, Stream *strm)
 			errstack.pushf("NEGOTIATOR", 1, "Not an administrator and authorization maps (NEGOTIATOR_CLASSAD_USER_MAP_NAMES) is not set.");
 			return returnPrioFactor(strm, errstack);
 		}
-		StringList map_names_list(map_names.c_str());
-		if (!map_names_list.contains("PRIORITY_FACTOR_AUTHORIZATION")) {
+		std::vector<std::string> map_names_list = split(map_names);
+		if (!contains(map_names_list, "PRIORITY_FACTOR_AUTHORIZATION")) {
 			errstack.pushf("NEGOTIATOR", 2, "Not an administrator and PRIORITY_FACTOR_AUTHORIZATION not a configured map file.");
 			return returnPrioFactor(strm, errstack);
 		}
@@ -1133,11 +1118,8 @@ SET_PRIORITYFACTOR_commandHandler (int, Stream *strm)
 
 		std::string map_output;
 		if (user_map_do_mapping("PRIORITY_FACTOR_AUTHORIZATION", peer_identity, map_output)) {
-			StringList items(map_output.c_str(), ",");
-			items.rewind();
-			char * item;
-			while ( (item = items.next()) ) {
-				if (!strncmp(item, submitter.c_str(), strlen(item))) {
+			for (const auto& item: StringTokenIterator(map_output, ",")) {
+				if (submitter.starts_with(item)) {
 					authorized = true;
 				}
 			}
@@ -2885,8 +2867,8 @@ Matchmaker::TransformSubmitterAd(classad::ClassAd &ad)
 	if (!param(map_names, "NEGOTIATOR_CLASSAD_USER_MAP_NAMES")) {
 		return true;
 	}
-	StringList map_names_list(map_names.c_str());
-	if (!map_names_list.contains("GROUP_PREFIX")) {
+	std::vector<std::string> map_names_list = split(map_names);
+	if (!contains(map_names_list, "GROUP_PREFIX")) {
 		return true;
 	}
 
@@ -2949,11 +2931,34 @@ obtainAdsFromCollector (
 
     cp_resources = false;
 
+    // build a query for Scheduler, Submitter and (constrained) machine ads
+    //
+#if 1
+	CondorQuery publicQuery(QUERY_MULTIPLE_PVT_ADS);
+	publicQuery.addExtraAttribute(ATTR_SEND_PRIVATE_ATTRIBUTES, "true");
+
+	if (!m_SubmitterConstraintStr.empty()) {
+		publicQuery.addORConstraint(m_SubmitterConstraintStr.c_str());
+	}
+	publicQuery.convertToMulti(SUBMITTER_ADTYPE, true, false, false);
+
+	if (strSlotConstraint && strSlotConstraint[0]) {
+		publicQuery.addORConstraint(strSlotConstraint);
+	}
+	if (!ConsiderPreemption) {
+		const char *projectionString =
+			"ifThenElse((State == \"Claimed\"&&PartitionableSlot=!=true),\"Name MyType State Activity StartdIpAddr AccountingGroup Owner RemoteUser Requirements SlotWeight ConcurrencyLimits\",\"\") ";
+		publicQuery.setDesiredAttrsExpr(projectionString);
+		dprintf(D_ALWAYS, "Not considering preemption, therefore constraining idle machines with %s\n", projectionString);
+	}
+	publicQuery.convertToMulti(STARTD_SLOT_ADTYPE, true, true, false);
+	// TODO: add this to the query and get rid of separate query for private ads?
+	// publicQuery.convertToMulti(STARTD_PVT_ADTYPE, true, true, false);
+
+#else
 	static const char * submitter_ad_constraint = "MyType == \"" SUBMITTER_ADTYPE "\"";
 	static const char * slot_ad_constraint = "MyType == \"" STARTD_SLOT_ADTYPE "\" || MyType == \"" STARTD_OLD_ADTYPE "\"";
 
-    // build a query for Scheduler, Submitter and (constrained) machine ads
-    //
 	CondorQuery publicQuery(ANY_AD);
 	std::string constraint;
 	if (!m_SubmitterConstraintStr.empty()) {
@@ -2982,6 +2987,7 @@ obtainAdsFromCollector (
 
 		dprintf(D_ALWAYS, "Not considering preemption, therefore constraining idle machines with %s\n", projectionString);
 	}
+#endif
 
 	dprintf(D_ALWAYS,"  Getting startd private ads ...\n");
 	ClassAdList startdPvtAdList;
@@ -3212,7 +3218,6 @@ obtainAdsFromCollector (
 			// ad's job_prio_array attribute.  See gittrac #3218.
 			if ( want_globaljobprio ) {
 				std::string jobprioarray;
-				StringList jobprios;
 
 				if (!ad->LookupString(ATTR_JOB_PRIO_ARRAY,jobprioarray)) {
 					// By design, if negotiator has want_globaljobprio and a schedd
@@ -3221,15 +3226,12 @@ obtainAdsFromCollector (
 					jobprioarray = std::to_string( INT_MIN );
 				}
 
-				jobprios.initializeFromString( jobprioarray.c_str() );
-				jobprios.rewind();
-				char *prio = NULL;
 				// Insert a group of submitter ads with one ATTR_JOB_PRIO value
 				// taken from the list in ATTR_JOB_PRIO_ARRAY.
-				while ( (prio = jobprios.next()) != NULL ) {
+				for (const auto& prio: StringTokenIterator(jobprioarray)) {
 					ClassAd *adCopy = new ClassAd( *ad );
 					ASSERT(adCopy);
-					adCopy->Assign(ATTR_JOB_PRIO,atoi(prio));
+					adCopy->Assign(ATTR_JOB_PRIO, atoi(prio.c_str()));
 					submitterAds.push_back(adCopy);
 				}
 			} else {
@@ -3364,9 +3366,7 @@ Matchmaker::MakeClaimIdHash(ClassAdList &startdPvtAdList, ClaimIdHash &claimIds)
 
         // Use the new claim-list if it is present, otherwise use traditional claim id (not both)
         if (ad->LookupString(ATTR_CLAIM_ID_LIST, claimlist)) {
-            StringList idlist(claimlist.c_str());
-            idlist.rewind();
-            while (char* id = idlist.next()) {
+			for (const auto& id: StringTokenIterator(claimlist)) {
                 f->second.insert(id);
             }
         } else {
@@ -3432,19 +3432,20 @@ bool getSubmitter(const ClassAd &ad, std::string &submitter)
 static
 bool makeSubmitterScheddHash(const ClassAd &ad, std::string &hash)
 {
-	std::stringstream ss;
 	std::string scheddAddr, submitterName;
 	if (!getScheddAddr(ad, scheddAddr) || !getSubmitter(ad, submitterName))
 	{
 		return false;
 	}
-	ss << submitterName << "," << scheddAddr;
+	std::string ss {submitterName};
+    ss += ',';
+	ss += scheddAddr;
 	int jobprio = 0;
 	ad.EvaluateAttrInt("JOBPRIO_MIN", jobprio);
-	ss << "," << jobprio;
+	formatstr_cat(ss, ", %d", jobprio);
 	ad.EvaluateAttrInt("JOBPRIO_MAX", jobprio);
-	ss << "," << jobprio;
-	hash = ss.str();
+	formatstr_cat(ss, ", %d", jobprio);
+	hash = ss;
 	return true;
 }
 
@@ -3723,14 +3724,6 @@ Matchmaker::startNegotiate(const std::string &submitter, const ClassAd &submitte
 bool
 Matchmaker::startNegotiateProtocol(const std::string &submitter, const ClassAd &submitterAd, ReliSock *&sock, RRLPtr &request_list)
 {
-	std::string submitter_tag;
-	int negotiate_cmd = NEGOTIATE; // 7.5.4+
-	if (!submitterAd.EvaluateAttrString(ATTR_SUBMITTER_TAG, submitter_tag))
-	{
-			// schedd must be older than 7.5.4
-		negotiate_cmd = NEGOTIATE_WITH_SIGATTRS;
-	}
-
 	// fetch the verison of the schedd, so we can take advantage of
 	// protocol improvements in newer versions while still being
 	// backwards compatible.
@@ -3764,6 +3757,15 @@ Matchmaker::startNegotiateProtocol(const std::string &submitter, const ClassAd &
 	std::string schedd_id;
 	formatstr(schedd_id, "%s (%s)", submitter.c_str(), scheddAddr.c_str());
 
+	std::string submitter_tag;
+	int negotiate_cmd = NEGOTIATE; // 7.5.4+
+	if (!submitterAd.EvaluateAttrString(ATTR_SUBMITTER_TAG, submitter_tag))
+	{
+		dprintf(D_ERROR, "Matchmaker::negotiate: Submitter ad for %s is missing %s",
+		        schedd_id.c_str(), ATTR_SUBMITTER_TAG);
+		return false;
+	}
+
 	// 0.  connect to the schedd --- ask the cache for a connection
 	sock = sockCache->findReliSock(scheddAddr);
 	if (!sock)
@@ -3776,8 +3778,14 @@ Matchmaker::startNegotiateProtocol(const std::string &submitter, const ClassAd &
 
 		if (IsDebugLevel(D_COMMAND))
 		{
-			int cmd = negotiate_cmd;
-			dprintf(D_COMMAND, "Matchmaker::negotiate(%s,...) making connection to %s\n", getCommandStringSafe(cmd), scheddAddr.c_str());
+			dprintf(D_COMMAND, "Matchmaker::negotiate(%s,...) making connection to %s\n", getCommandStringSafe(negotiate_cmd), scheddAddr.c_str());
+		}
+
+		std::string capability;
+		std::string sess_id;
+		if (submitterAd.LookupString(ATTR_CAPABILITY, capability)) {
+			ClaimIdParser cidp(capability.c_str());
+			sess_id = cidp.secSessionId();
 		}
 
 		Daemon schedd(&submitterAd, DT_SCHEDD, 0);
@@ -3787,7 +3795,7 @@ Matchmaker::startNegotiateProtocol(const std::string &submitter, const ClassAd &
 			dprintf(D_ALWAYS, "    Failed to connect to %s\n", schedd_id.c_str());
 			return false;
 		}
-		if (!schedd.startCommand(negotiate_cmd, sock, NegotiatorTimeout)) {
+		if (!schedd.startCommand(negotiate_cmd, sock, NegotiatorTimeout, nullptr, nullptr, false, sess_id.c_str())) {
 			dprintf(D_ALWAYS, "    Failed to send NEGOTIATE command to %s\n",
 					 schedd_id.c_str());
 			delete sock;
@@ -3815,7 +3823,7 @@ Matchmaker::startNegotiateProtocol(const std::string &submitter, const ClassAd &
 	}
 
 	sock->encode();
-	if (negotiate_cmd == NEGOTIATE)
+	// Keeping body of old if-statement to avoid re-indenting
 	{
 		// Here we create a negotiation ClassAd to pass parameters to the
 		// schedd's negotiation method.
@@ -3860,29 +3868,6 @@ Matchmaker::startNegotiateProtocol(const std::string &submitter, const ClassAd &
 			sockCache->invalidateSock(scheddAddr);
 			return false;
 		}
-	}
-	else if (negotiate_cmd == NEGOTIATE_WITH_SIGATTRS)
-	{
-			// old protocol prior to 7.5.4
-		if (!sock->put(submitter))
-		{
-			dprintf(D_ALWAYS, "    Failed to send submitterName to %s\n",
-					 schedd_id.c_str());
-			sockCache->invalidateSock(scheddAddr);
-			return false;
-		}
-			// send the significant attributes
-		if (!sock->put(job_attr_references))
-		{
-			dprintf (D_ALWAYS, "    Failed to send significant attrs to %s\n",
-					 schedd_id.c_str());
-			sockCache->invalidateSock(scheddAddr);
-			return false;
-		}
-	}
-	else
-	{
-		EXCEPT("Unexpected negotiate_cmd=%d", negotiate_cmd);
 	}
 
 	if (!sock->end_of_message())
@@ -4351,30 +4336,28 @@ rejectForConcurrencyLimits(std::string &limits)
 		return true;
 	}
 
-	StringList list(limits.c_str());
-	char *limit;
-	std::string str;
-	list.rewind();
-	while ((limit = list.next())) {
+	for (const auto& limit: StringTokenIterator(limits)) {
 		double increment;
-		if ( !ParseConcurrencyLimit(limit, increment) ) {
+		char* limit_cpy = strdup(limit.c_str());
+		if ( !ParseConcurrencyLimit(limit_cpy, increment) ) {
 			dprintf( D_FULLDEBUG, "Ignoring invalid concurrency limit '%s'\n",
-					 limit );
+					 limit.c_str() );
+			free(limit_cpy);
 			continue;
 		}
 
-		str = limit;
-		double count = accountant.GetLimit(str);
+		double count = accountant.GetLimit(limit_cpy);
 
-		double max = accountant.GetLimitMax(str);
+		double max = accountant.GetLimitMax(limit_cpy);
 
 		dprintf(D_FULLDEBUG,
 			"Concurrency Limit: %s is %f of max %f\n",
-			limit, count, max);
+			limit_cpy, count, max);
 
 		if (count < 0) {
 			dprintf(D_ALWAYS, "ERROR: Concurrency Limit %s is %f (below 0)\n",
-				limit, count);
+				limit_cpy, count);
+			free(limit_cpy);
 			return true;
 		}
 
@@ -4382,11 +4365,12 @@ rejectForConcurrencyLimits(std::string &limits)
 			dprintf(D_FULLDEBUG,
 				"Concurrency Limit %s is %f, requesting %f, "
 				"but cannot exceed %f\n",
-				limit, count, increment, max);
+				limit_cpy, count, increment, max);
 
 			rejForConcurrencyLimit++;
-			rejectedConcurrencyLimits.insert(limit);
+			rejectedConcurrencyLimits.insert(limit_cpy);
 			lastRejectedConcurrencyString = limits;
+			free(limit_cpy);
 			return true;
 		}
 	}
@@ -5038,14 +5022,8 @@ insertNegotiatorMatchExprs(ClassAd *ad)
 {
 	ASSERT(ad);
 
-	NegotiatorMatchExprNames.rewind();
-	NegotiatorMatchExprValues.rewind();
-	char const *expr_name;
-	while( (expr_name=NegotiatorMatchExprNames.next()) ) {
-		char const *expr_value = NegotiatorMatchExprValues.next();
-		ASSERT(expr_value);
-
-		ad->AssignExpr(expr_name,expr_value);
+	for (const auto& [expr_name, expr_value]: NegotiatorMatchExprs) {
+		ad->AssignExpr(expr_name, expr_value.c_str());
 	}
 }
 
@@ -6386,15 +6364,10 @@ Matchmaker::pslotMultiMatch(ClassAd *job, ClassAd *machine, const char *submitte
 		// Sort all dslots by their current rank
 	std::sort(ranks.begin(), ranks.end(), rankPairCompare);
 
-	std::list<std::string> attrs;
+	std::vector<std::string> attrs;
 	std::string attrs_str;
 	if ( machine->LookupString( ATTR_MACHINE_RESOURCES, attrs_str ) ) {
-		StringList attrs_list( attrs_str.c_str(), " " );
-		attrs_list.rewind();
-		char *entry;
-		while ( (entry = attrs_list.next()) ) {
-			attrs.emplace_back(entry );
-		}
+		attrs = split(attrs_str, " ");
 	} else {
 		attrs.emplace_back("cpus");
 		attrs.emplace_back("memory");
@@ -6404,10 +6377,10 @@ Matchmaker::pslotMultiMatch(ClassAd *job, ClassAd *machine, const char *submitte
 		// Backup all the attributes in the machine ad we may end up mutating
 	ExprTree* expr;
 	ClassAd* backupAd = new ClassAd();
-	for (auto it = attrs.begin(); it != attrs.end(); it++) {
-		if ( (expr = machine->Lookup(*it)) ) {
+	for (const auto& attr: attrs) {
+		if ( (expr = machine->Lookup(attr)) ) {
 			expr = expr->Copy();
-			backupAd->Insert(*it,expr);
+			backupAd->Insert(attr, expr);
 		}
 	}
 	backupAd->AssignExpr(ATTR_REMOTE_USER,"UNDEFINED");
@@ -6499,26 +6472,26 @@ Matchmaker::pslotMultiMatch(ClassAd *job, ClassAd *machine, const char *submitte
 		usableDSlots.push_back(slot);
 
 			// for each splitable resource, get it from the dslot, and add to pslot
-		for (std::list<std::string>::iterator it = attrs.begin(); it != attrs.end(); it++) {
+		for (const auto& attr: attrs) {
 			double b4 = 0.0;
 			double realValue = 0.0;
 
-			if (machine->LookupFloat(*it, b4)) {
+			if (machine->LookupFloat(attr, b4)) {
 					// The value exists in the parent
 				b4 = floor(b4);
 				classad::Value result;
-				if ( !dslotLookup( machine, it->c_str(), dSlot, result ) ) {
+				if ( !dslotLookup( machine, attr.c_str(), dSlot, result ) ) {
 					result.SetUndefinedValue();
 				}
 
 				long long longValue;
 				if (result.IsIntegerValue(longValue)) {
-					machine->Assign(*it, (long long) (b4 + longValue));
+					machine->Assign(attr, (long long) (b4 + longValue));
 				} else if (result.IsRealValue(realValue)) {
-					machine->Assign(*it, (b4 + realValue));
+					machine->Assign(attr, (b4 + realValue));
 				} else {
 					// TODO: deal with slot resources that are not ints or reals, e.g. non-fungibles
-					dprintf(D_ALWAYS, "Lookup of %s failed to evalute to integer or real\n", (*it).c_str());	
+					dprintf(D_ALWAYS, "Lookup of %s failed to evalute to integer or real\n", attr.c_str());	
 				}
 			}
 		}

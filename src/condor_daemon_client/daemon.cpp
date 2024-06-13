@@ -22,6 +22,7 @@
 #include "condor_debug.h"
 #include "condor_config.h"
 #include "condor_ver_info.h"
+#include "condor_version.h"
 #include "condor_open.h"
 
 #include "daemon.h"
@@ -43,8 +44,6 @@
 
 #include "ipv6_hostname.h"
 
-#include <sstream>
-
 void
 Daemon::common_init() {
 	_type = DT_NONE;
@@ -61,6 +60,7 @@ Daemon::common_init() {
 	Sock::set_timeout_multiplier( param_integer(buf, param_integer("TIMEOUT_MULTIPLIER", 0)) );
 	dprintf(D_DAEMONCORE, "*** TIMEOUT_MULTIPLIER :: %d\n", Sock::get_timeout_multiplier());
 	m_has_udp_command_port = true;
+	collector_list_it = collector_list.begin();
 }
 
 DaemonAllowLocateFull::DaemonAllowLocateFull( daemon_t tType, const char* tName, const char* tPool ) 
@@ -243,6 +243,63 @@ Daemon::~Daemon()
 // Data-providing methods
 //////////////////////////////////////////////////////////////////////
 
+ClassAd *
+Daemon::locationAd() {
+	if( m_daemon_ad_ptr ) {
+		// dprintf( D_ALWAYS, "locationAd(): found daemon ad, returning it\n" );
+		return m_daemon_ad_ptr;
+	}
+
+	if( m_location_ad_ptr ) {
+		// dprintf( D_ALWAYS, "locationAd(): found location ad, returning it\n" );
+		return m_location_ad_ptr;
+	}
+
+	ClassAd * locationAd = new ClassAd();
+	const char * buffer = NULL;
+
+	buffer = this->addr();
+	if(! buffer) { goto failure; }
+	if(! locationAd->InsertAttr(ATTR_MY_ADDRESS, buffer)) { goto failure; }
+
+	buffer = this->name();
+	if(! buffer) { buffer = "Unknown"; }
+	if(! locationAd->InsertAttr(ATTR_NAME, buffer)) { goto failure; }
+
+	buffer = this->fullHostname();
+	if(! buffer) { buffer = "Unknown"; }
+	if(! locationAd->InsertAttr(ATTR_MACHINE, buffer)) { goto failure; }
+
+	/* This will inevitably be overwritten by CondorVersion(), below,
+	   so I don't know what the original was attempting accomplish here. */
+	buffer = this->version();
+	if(! buffer) { buffer = ""; }
+	if(! locationAd->InsertAttr(ATTR_VERSION, buffer)) { goto failure; }
+
+	AdTypes ad_type;
+	if(! convert_daemon_type_to_ad_type(this->type(), ad_type)) { goto failure; }
+	buffer = AdTypeToString(ad_type);
+	if(! buffer) { goto failure; }
+	if(! locationAd->InsertAttr(ATTR_MY_TYPE, buffer)) { goto failure; }
+
+	buffer = CondorVersion();
+	if(! locationAd->InsertAttr(ATTR_VERSION, buffer)) { goto failure; }
+
+	buffer = CondorPlatform();
+	if(! locationAd->InsertAttr(ATTR_PLATFORM, buffer)) { goto failure; }
+
+	// dprintf( D_ALWAYS, "locationAd(): synthesized location ad, returning it.\n" );
+	m_location_ad_ptr = locationAd;
+	return m_location_ad_ptr;
+
+  failure:;
+	// dprintf( D_ALWAYS, "Daemon::locationAd() failed.\n" );
+	delete locationAd;
+	return NULL;
+}
+
+
+
 const char*
 Daemon::name( void )
 {
@@ -400,19 +457,16 @@ Daemon::display( FILE* fp )
 bool
 Daemon::nextValidCm()
 {
-	char *dname;
 	bool rval = false;
 
-	do {
- 		dname = daemon_list.next();
-		if( dname != NULL )
-		{
-			rval = findCmDaemon( dname );
+	while (rval == false && collector_list_it != collector_list.end()) {
+		if (++collector_list_it != collector_list.end()) {
+			rval = findCmDaemon(collector_list_it->c_str());
 			if( rval == true ) {
 				locate();
 			}
 		}
-	} while( rval == false && dname != NULL );
+	}
 	return rval;
 }
 
@@ -420,10 +474,12 @@ Daemon::nextValidCm()
 void
 Daemon::rewindCmList()
 {
-	char *dname;
+	const char *dname = nullptr;
 
-	daemon_list.rewind();
- 	dname = daemon_list.next();
+	collector_list_it = collector_list.begin();
+	if (!collector_list.empty()) {
+		dname = collector_list_it->c_str();
+	}
 	findCmDaemon( dname );
 	locate();
 }
@@ -585,7 +641,7 @@ Daemon::startCommand( int cmd, Stream::stream_type st,Sock **sock,int timeout, C
 	req.m_misc_data = misc_data;
 	req.m_nonblocking = nonblocking;
 	req.m_cmd_description = cmd_description;
-	req.m_sec_session_id = sec_session_id;
+	req.m_sec_session_id = sec_session_id ? sec_session_id : m_sec_session_id.c_str();
 	req.m_owner = m_owner;
 	req.m_methods = m_methods;
 
@@ -608,7 +664,7 @@ Daemon::startSubCommand( int cmd, int subcmd, Sock* sock, int timeout, CondorErr
 	// This is a blocking version of startCommand().
 	req.m_nonblocking = false;
 	req.m_cmd_description = cmd_description;
-	req.m_sec_session_id = sec_session_id;
+	req.m_sec_session_id = sec_session_id ? sec_session_id : m_sec_session_id.c_str();
 	req.m_owner = m_owner;
 	req.m_methods = m_methods;
 
@@ -704,7 +760,7 @@ Daemon::startCommand_nonblocking( int cmd, Sock* sock, int timeout, CondorError 
 	// This is the nonblocking version of startCommand().
 	req.m_nonblocking = true;
 	req.m_cmd_description = cmd_description;
-	req.m_sec_session_id = sec_session_id;
+	req.m_sec_session_id = sec_session_id ? sec_session_id : m_sec_session_id.c_str();
 	req.m_owner = m_owner;
 	req.m_methods = m_methods;
 
@@ -726,7 +782,7 @@ Daemon::startCommand( int cmd, Sock* sock, int timeout, CondorError *errstack, c
 	// This is the blocking version of startCommand().
 	req.m_nonblocking = false;
 	req.m_cmd_description = cmd_description;
-	req.m_sec_session_id = sec_session_id;
+	req.m_sec_session_id = sec_session_id ? sec_session_id : m_sec_session_id.c_str();
 	req.m_owner = m_owner;
 	req.m_methods = m_methods;
 
@@ -1410,9 +1466,11 @@ Daemon::getCmInfo( const char* subsys )
 			return false;
 		}
 
-		daemon_list.initializeFromString(hostnames);
-		daemon_list.rewind();
-		host = strdup(daemon_list.next());
+		collector_list = split(hostnames);
+		collector_list_it = collector_list.begin();
+		if (!collector_list.empty()) {
+			host = strdup(collector_list_it->c_str());
+		}
 		free( hostnames );
 	}
 
@@ -2368,12 +2426,9 @@ Daemon::getSessionToken( const std::vector<std::string> &authz_bounding_limit, i
 	}
 
 	classad::ClassAd ad;
-	std::stringstream ss;
-	for (const auto &authz : authz_bounding_limit) {
-		ss << authz << ",";
-	}
-	const std::string &authz_limit_str = ss.str();
-	if (!authz_limit_str.empty() && !ad.InsertAttr(ATTR_SEC_LIMIT_AUTHORIZATION, authz_limit_str.substr(0, authz_limit_str.size()-1))) {
+
+	const std::string authz_limit_str = join(authz_bounding_limit, ",");
+	if (!authz_limit_str.empty() && !ad.InsertAttr(ATTR_SEC_LIMIT_AUTHORIZATION, authz_limit_str)) {
 		if (err) err->pushf("DAEMON", 1, "Failed to create token request ClassAd");
 		dprintf(D_FULLDEBUG, "Failed to create token request ClassAd\n");
 		return false;
@@ -2564,14 +2619,10 @@ Daemon::startTokenRequest( const std::string &identity,
 	}
 
 	classad::ClassAd ad;
-	std::stringstream ss;
-	for (const auto &authz : authz_bounding_set) {
-		ss << authz << ",";
-	}
-	const std::string &authz_limit_str = ss.str();
+	const std::string authz_limit_str = join(authz_bounding_set, ",");
+
 	if (!authz_limit_str.empty() &&
-		!ad.InsertAttr(ATTR_SEC_LIMIT_AUTHORIZATION,
-			authz_limit_str.substr(0, authz_limit_str.size()-1)))
+		!ad.InsertAttr(ATTR_SEC_LIMIT_AUTHORIZATION, authz_limit_str))
 	{
 		if (err) { err->pushf("DAEMON", 1, "Failed to create token request ClassAd"); }
 		dprintf(D_FULLDEBUG, "Failed to create token request ClassAd\n");

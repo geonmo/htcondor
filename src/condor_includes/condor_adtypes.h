@@ -25,9 +25,9 @@
 #define TT_ADTYPE			"TTProcess"
 //#define STARTD_ADTYPE			"Machine"
 #define STARTD_OLD_ADTYPE		"Machine"
-#define STARTD_SLOT_ADTYPE		"Slot"
-#define STARTD_DAEMON_ADTYPE	"StartDaemon"
-//#define STARTD_PVT_ADTYPE		"MachinePrivate"
+#define STARTD_SLOT_ADTYPE		"Machine"  // can't make this "Slot" without breaking GANGLIAD for now....
+#define STARTD_DAEMON_ADTYPE	"StartD"
+#define STARTD_PVT_ADTYPE		"MachinePrivate"
 #define SCHEDD_ADTYPE			"Scheduler"
 #define MASTER_ADTYPE			"DaemonMaster"
 #define CKPT_SRVR_ADTYPE		"CkptServer"
@@ -59,10 +59,10 @@
 #define BOGUS_ADTYPE		"Bogus"
 
 // Enumerated list of ad types (for the query object)
-enum AdTypes
+typedef enum : long
 {
 	NO_AD = -1,
-	STARTD_AD,		// unspecified Startd ad type, "Machine" or "Slot" or "StartdDaemon" depending on context
+	STARTD_AD,		// unspecified Startd ad type, "Machine" or "Slot" or "StartD" depending on context
 	SCHEDD_AD,
 	MASTER_AD,
 	GATEWAY_AD,
@@ -73,7 +73,7 @@ enum AdTypes
 	LICENSE_AD,
 	STORAGE_AD,
 	ANY_AD,
-	BOGUS_AD,		// placeholder: NUM_AD_TYPES used wrongly to be here
+	BOGUS_AD,		// NUM_AD_TYPES used wrongly to be here, now used by COLLECTOR as MULTI
 	CLUSTER_AD,
 	NEGOTIATOR_AD,
 	HAD_AD,
@@ -86,11 +86,11 @@ enum AdTypes
 	LEASE_MANAGER_AD,	// placeholder: this type no longer used
 	DEFRAG_AD,
 	ACCOUNTING_AD,
-	SLOT_AD,
-	STARTDAEMON_AD,
+	SLOT_AD,			// Explicitly a Startd slot ad, currently maps to "Machine" instead of "Slot" for backward compat
+	STARTDAEMON_AD,		// Explicitly a Startd daemon ad
 	// This should *ALWAYS* be at the end of this list
 	NUM_AD_TYPES,
-};
+} AdTypes;
 
 const char*
 AdTypeToString( AdTypes type );

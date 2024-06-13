@@ -27,7 +27,6 @@
 #ifndef _CONDOR_RESMGR_H
 #define _CONDOR_RESMGR_H
 
-#include "simplelist.h"
 #include "startd_named_classad_list.h"
 
 #include "IdDispenser.h"
@@ -58,9 +57,7 @@
 #define NUM_ELEMENTS(_ary)   (sizeof(_ary) / sizeof((_ary)[0]))
 #endif
 
-#ifdef LINUX
 #include "VolumeManager.h"
-#endif
 
 typedef double (Resource::*ResourceFloatMember)();
 typedef void (Resource::*VoidResourceMember)();
@@ -79,6 +76,9 @@ public:
 	stats_entry_recent<int>	total_rank_preemptions;
 	stats_entry_recent<int>	total_user_prio_preemptions;
 	stats_entry_recent<int>	total_job_starts;
+	stats_entry_recent<int>	total_claim_requests;
+	stats_entry_recent<int>	total_activation_requests;
+	stats_entry_recent<int> total_new_dslot_unwilling;
 	stats_entry_recent<Probe> job_busy_time;
 	stats_entry_recent<Probe> job_duration;
 
@@ -98,6 +98,9 @@ public:
 		pool.AddProbe("JobRankPreemptions", &total_rank_preemptions);
 		pool.AddProbe("JobUserPrioPreemptions", &total_user_prio_preemptions);
 		pool.AddProbe("JobStarts", &total_job_starts);
+		pool.AddProbe("ClaimRequests", &total_claim_requests);
+		pool.AddProbe("ActivationRequests", &total_activation_requests);
+		pool.AddProbe("NewDSlotNotMatch", &total_new_dslot_unwilling);
 
 		// publish two Miron probes, showing only XXXCount if count is zero, and
 		// also XXXMin, XXXMax and XXXAvg if count is non-zero
@@ -213,9 +216,10 @@ public:
 	// called from StartdCronJob::Publish after one or more adlist ads with an ad_name prefix are updated
 	// this gives a chance to refresh the startd cron ads right away
 	// TODO: TJ, figure out is this necessary?
-	void adlist_updated(const char * /*ad_name*/) {
+	void adlist_updated(const char * /*ad_name*/, bool update_collector) {
 		// TODO: be more selective about what we refresh here?
 		walk(&Resource::refresh_startd_cron_attrs);
+		if (update_collector) rip_update_needed(1<<Resource::WhyFor::wf_cronRequest);
 	}
 
 private:
@@ -288,6 +292,7 @@ public:
 	void		init_config_classad( void );
 	void		updateExtrasClassAd( ClassAd * cap );
 	void		publish_daemon_ad(ClassAd & ad);
+	void		final_update_daemon_ad();
 
 	void		addResource( Resource* );
 	bool		removeResource( Resource* );
@@ -365,7 +370,7 @@ public:
        double EndWalk(VoidResourceMember memberfunc, double timeBegin);
     } stats;
 
-	void FillExecuteDirsList( class StringList *list );
+	void FillExecuteDirsList( std::vector<std::string>& list );
 
 	int nextId( void ) { return id_disp->next(); };
 
@@ -410,6 +415,12 @@ public:
 
 	bool compute_resource_conflicts();
 	void printSlotAds(const char * slot_types) const;
+	void refresh_classad_resources(Resource * rip) const {
+		rip->refresh_classad_resources(primary_res_in_use);
+	}
+	void publish_static_slot_resources(Resource * rip, classad::ClassAd * cad) const {
+		rip->publish_static_resources(cad, primary_res_in_use);
+	}
 
 	template <typename Func>
 	void walk(Func fn) {
@@ -423,9 +434,7 @@ public:
 	void killAllClaims()              { walk( [](Resource* rip) { rip->shutdownAllClaims(false); } ); }
 	void initResourceAds()            { walk( [](Resource* rip) { rip->init_classad(); } ); }
 
-#ifdef LINUX
 	VolumeManager *getVolumeManager() const {return m_volume_mgr.get();}
-#endif //LINUX
 
 private:
 	static void token_request_callback(bool success, void *miscdata);
@@ -433,6 +442,13 @@ private:
 	// The main slot collection, this should normally be sorted by slot id / slot sub-id
 	// but may not be for brief periods during slot creation
 	std::vector<Resource*> slots;
+
+	// The resources-in-use collections. this is recalculated each time
+	// compute_resource_conflicts is called and is used by both the daemon-ad and by the
+	// backfill slot advertising code
+	ResBag primary_res_in_use;
+	ResBag backfill_res_in_use;
+	ResBag excess_backfill_res; // difference between size of backfill and primary bag when both are fully idle
 
 	IdDispenser* id_disp;
 	bool 		is_shutting_down;
@@ -447,7 +463,7 @@ private:
 	time_t	cur_time;		// current time
 	time_t	deathTime = 0;		// If non-zero, time we will SIGTERM
 
-	StringList**	type_strings;	// Array of StringLists that
+	std::vector<std::string> type_strings;	// Array of strings that
 		// define the resource types specified in the config file.  
 	int*		type_nums;		// Number of each type.
 	int*		new_type_nums;	// New numbers of each type.
@@ -457,6 +473,8 @@ private:
 	std::vector<Resource*>	_pending_removes;
 	void _remove_and_delete_slot_res(Resource*);
 	void _complete_removes();
+	// called in init_resources after the configured slots have been created 
+	void _post_init_resources();
 
 	// search helper templates
 	template <typename Ret, typename Filter>
@@ -510,10 +528,11 @@ private:
 	std::string m_token_request_id;
 	std::string m_token_client_id;
 	Daemon *m_token_daemon{nullptr};
+	DCTokenRequester m_token_requester;
 
 #if HAVE_BACKFILL
-	bool backfillConfig( void );
-	bool m_backfill_shutdown_pending;
+	bool backfillMgrConfig( void );
+	bool m_backfill_mgr_shutdown_pending;
 #endif /* HAVE_BACKFILL */
 
 #if HAVE_JOB_HOOKS
@@ -549,12 +568,11 @@ private:
 	int total_draining_unclaimed;
 	int max_job_retirement_time_override;
 
-#ifdef LINUX
 	std::unique_ptr<VolumeManager> m_volume_mgr;
-#endif
 
-	DCTokenRequester m_token_requester;
+#ifdef HAVE_DATA_REUSE_DIR
 	std::unique_ptr<htcondor::DataReuseDirectory> m_reuse_dir;
+#endif
 };
 
 

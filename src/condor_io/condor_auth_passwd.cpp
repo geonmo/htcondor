@@ -45,6 +45,7 @@
 #include "condor_secman.h"
 #include "compat_classad_util.h"
 #include "classad/exprTree.h"
+#include "fcloser.h"
 
 #include "condor_auth_passwd.h"
 
@@ -94,8 +95,6 @@ GCC_DIAG_OFF(cast-qual)
 GCC_DIAG_ON(float-equal)
 GCC_DIAG_ON(cast-qual)
 
-#include <sstream>
-#include <fstream>
 #include <stdio.h>
 
 namespace {
@@ -152,23 +151,22 @@ bool findToken(const std::string &tokenfilename,
 {
 	dprintf(D_SECURITY, "IDTOKENS: Examining %s for valid tokens from issuer %s.\n", tokenfilename.c_str(), issuer.c_str());
 
-	std::unique_ptr<FILE,decltype(&fclose)> 
-		f(safe_fopen_no_create( tokenfilename.c_str(), "r" ), fclose);
-
-	if( f.get() == NULL ) {
-		dprintf(D_ALWAYS, "Failed to open token file '%s': %d (%s)\n",
-		    tokenfilename.c_str(), errno, strerror(errno));
+	bool rv = false;
+	char* data = nullptr;
+	size_t len = 0;
+	if (!read_secure_file(tokenfilename.c_str(), (void**)&data, &len, true, SECURE_FILE_VERIFY_ALL)) {
 		return false;
 	}
-    for( std::string line; readLine( line, f.get(), false ); ) {
-		trim(line);
+	for (auto& line: StringTokenIterator(data, len, "\n")) {
 		if (line.empty() || line[0] == '#') continue;
 		bool good_token = checkToken(line, issuer, server_key_ids, tokenfilename, username, token, signature);
 		if (good_token) {
-			return true;
+			rv = true;
+			break;
 		}
 	}
-	return false;
+	free(data);
+	return rv;
 }
 
 bool
@@ -1610,13 +1608,8 @@ Condor_Auth_Passwd::generate_token(const std::string & id,
 		.set_key_id(key_id.empty() ? "POOL" : key_id);
 
 	if (!authz_list.empty()) {
-		std::stringstream ss;
-		for (const auto &authz : authz_list) {
-			std::string authz_full = "condor:/" + authz;
-			ss << authz_full << " ";
-		}
-		const std::string &authz_set = ss.str();
-		jwt_builder.set_payload_claim("scope", jwt::claim(authz_set.substr(0, authz_set.size()-1)));
+		const std::string authz_set = std::string("condor:/") + join(authz_list, " condor:/");
+		jwt_builder.set_payload_claim("scope", jwt::claim(authz_set));
 	}
 	if (lifetime >= 0) {
 		jwt_builder.set_expires_at(std::chrono::system_clock::now() + std::chrono::seconds(lifetime));
@@ -2095,16 +2088,12 @@ Condor_Auth_Passwd::doServerRec2(CondorError* /*errstack*/, bool non_blocking) {
 				if (decoded_jwt.has_payload_claim("scope")) {
 						// throws std::bad_cast if this isn't a string; caught below.
 					const std::string &scopes_str = decoded_jwt.get_payload_claim("scope").as_string();
-					StringList scope_list(scopes_str.c_str());
-					scope_list.rewind();
-					const char *scope;
-					while ( (scope = scope_list.next()) ) {
+					for (const auto& scope : StringTokenIterator(scopes_str)) {
 						scopes.emplace_back(scope);
-						if (strncmp(scope, "condor:/", 8)) {
+						if (strncmp(scope.c_str(), "condor:/", 8)) {
 							continue;
 						}
-						scope += 8;
-						authz.emplace_back(scope);
+						authz.emplace_back(&scope[8]);
 					}
 				}
 				if (decoded_jwt.has_expires_at()) {
@@ -2125,20 +2114,10 @@ Condor_Auth_Passwd::doServerRec2(CondorError* /*errstack*/, bool non_blocking) {
 			}
 			classad::ClassAd ad;
 			if (!authz.empty()) {
-				std::stringstream ss;
-				for (const auto &auth : authz) {
-					ss << auth << ",";
-				}
-				ad.InsertAttr(ATTR_SEC_LIMIT_AUTHORIZATION, ss.str());
+				ad.InsertAttr(ATTR_SEC_LIMIT_AUTHORIZATION, join(authz, ","));
 			}
 			if (!scopes.empty()) {
-				std::stringstream ss;
-				bool first = true;
-				for (const auto &scope : scopes) {
-					ss << (first ? "" : ",") << scope;
-					first = false;
-				}
-				ad.InsertAttr(ATTR_TOKEN_SCOPES, ss.str());
+				ad.InsertAttr(ATTR_TOKEN_SCOPES, join(scopes, ","));
 			}
 			if (username.empty()) {
 				// This should not be possible: the SciTokens library should fail such a token.
@@ -2985,10 +2964,9 @@ Condor_Auth_Passwd::create_signing_key( const std::string & filepath, const char
 
 		// Generate a signing key.
 	char rand_buffer[64];
-	if (!RAND_bytes(reinterpret_cast<unsigned char *>(rand_buffer), sizeof(rand_buffer))) {
-		// Insufficient entropy available; bail out!
-		return;
-	}
+	int r = RAND_bytes(reinterpret_cast<unsigned char *>(rand_buffer), sizeof(rand_buffer));
+	ASSERT(r == 1)
+
 
 		// Write out the signing key.
 	if (TRUE == write_binary_password_file(filepath.c_str(), rand_buffer, sizeof(rand_buffer))) {

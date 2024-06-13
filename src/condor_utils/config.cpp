@@ -322,7 +322,7 @@ char * is_valid_config_assignment(const char *config)
 		tmp = strchr(name, ':');
 		if (tmp) {
 			// turn the right hand side into a string list
-			StringList opts(tmp+1);
+			std::vector<std::string> opts = split(tmp+1);
 
 			// null terminate and trim trailing whitespace from the category name
 			*tmp = 0; 
@@ -331,15 +331,13 @@ char * is_valid_config_assignment(const char *config)
 
 			// the proper way to parse the right hand side of a metaknob is by using a stringlist
 			// but for remote setting, we really only want to allow a single options on the right hand side.
-			opts.rewind();
-			char * opt;
-			while ((opt = opts.next())) {
+			for (const auto& opt: opts) {
 				// lookup name,val as a metaknob, a return of -1 means not found
-				if ( ! is_valid && param_meta_value(name+1, opt, nullptr)) {
+				if ( ! is_valid && param_meta_value(name+1, opt.c_str(), nullptr)) {
 					is_valid = true;
 					// append the value to the metaknob name.
 					*tmp++ = '.';
-					strcpy(tmp, opt);
+					strcpy(tmp, opt.c_str());
 					tmp += strlen(tmp);
 					continue;
 				}
@@ -797,7 +795,6 @@ static bool Evaluate_config_if(const char * expr, bool & result, std::string & e
 		return true;
 	}
 
-#if 1
 	// TODO: convert version & defined to booleans, and then evaluate the result as a ClassAd expression
 
 	if ((ec == CIFT_COMPLEX) && ctx.is_context_ex && reinterpret_cast<MACRO_EVAL_CONTEXT_EX&>(ctx).ad) {
@@ -809,15 +806,6 @@ static bool Evaluate_config_if(const char * expr, bool & result, std::string & e
 			}
 		}
 	}
-#else // this code sort of works, but isn't necessarily the way we want to go
-	// the expression MAY be evaluatable by the classad library, if it is, then great
-	int ival;
-	ClassAd rad;
-	if (rad.AssignExpr("ifcondition", expr) && rad.EvalBool("ifcondition", NULL, ival)) {
-		result = (ival != 0);
-		return true;
-	}
-#endif
 
 	if (ec == CIFT_COMPLEX) {
 		err_reason = "complex conditionals are not supported";
@@ -974,7 +962,7 @@ int Parse_config_string(MACRO_SOURCE & source, int depth, const char * config, M
 	source.meta_off = -1;
 
 	ConfigIfStack ifstack;
-	StringList hereList;
+	std::string hereData;
 	std::string hereName;
 	std::string hereTag;
 
@@ -997,8 +985,7 @@ int Parse_config_string(MACRO_SOURCE & source, int depth, const char * config, M
 			const char * name = line;
 			if (name[0] == '@' && hereTag == name+1) {
 				/* expand self references only */
-				auto_free_ptr rhs(hereList.print_to_delimed_string("\n"));
-				auto_free_ptr value(expand_self_macro(rhs, hereName.c_str(), macro_set, ctx));
+				auto_free_ptr value(expand_self_macro(hereData.c_str(), hereName.c_str(), macro_set, ctx));
 				if (value.ptr() == NULL) {
 					return -1;
 				}
@@ -1006,10 +993,13 @@ int Parse_config_string(MACRO_SOURCE & source, int depth, const char * config, M
 
 				hereName.clear();
 				hereTag.clear();
-				hereList.clearAll();
+				hereData.clear();
 				continue;
 			}
-			hereList.append(line);
+			if (!hereData.empty()) {
+				hereData += '\n';
+			}
+			hereData += line;
 			continue;
 		}
 
@@ -1151,7 +1141,7 @@ int Parse_config_string(MACRO_SOURCE & source, int depth, const char * config, M
 			if (op == '@') {
 				hereName = name;
 				hereTag = rhs;
-				hereList.clearAll();
+				hereData.clear();
 				continue;
 			}
 
@@ -1307,14 +1297,16 @@ bool MacroStreamFile::open(const char * filename, bool is_command, MACRO_SET& se
 
 int MacroStreamFile::close(MACRO_SET&set, int parsing_return_val)
 {
-	return Close_macro_source(fp, src, set, parsing_return_val);
+	int ret = Close_macro_source(fp, src, set, parsing_return_val);
+	fp = nullptr;
+	return ret;
 }
 
 bool MacroStreamCharSource::open(const char * src_string, const MACRO_SOURCE& _src)
 {
 	src = _src;
 	if (input) delete input;
-	input = new StringTokenIterator(src_string, "\n");
+	input = new StringTokenIterator(src_string, "\n", STI_NO_TRIM);
 	return input != NULL;
 }
 
@@ -1353,29 +1345,29 @@ void MacroStreamCharSource::rewind()
 
 int MacroStreamCharSource::load(FILE* fp, MACRO_SOURCE & FileSource, bool preserve_linenumbers /*=false*/)
 {
-	StringList lines;
+	std::vector<std::string> lines;
 
 	if (preserve_linenumbers && (FileSource.line != 0)) {
 		// if we aren't starting at line zero, inject a comment indicating the starting line number
 		std::string buf; formatstr(buf, "#opt:lineno:%d", FileSource.line);
-		lines.append(buf.c_str());
+		lines.emplace_back(buf);
 	}
 	while (true) {
 		int lineno = FileSource.line;
 		char * line = getline_trim(fp, FileSource.line);
 		if ( ! line)
 			break;
-		lines.append(line);
+		lines.emplace_back(line);
 		if (preserve_linenumbers && (FileSource.line != lineno+1)) {
 			// if we read more than a single line, inject a comment indicating the new line number
 			std::string buf; formatstr(buf, "#opt:lineno:%d", FileSource.line);
-			lines.append(buf.c_str());
+			lines.emplace_back(buf);
 		}
 	}
-	file_string.set(lines.print_to_delimed_string("\n"));
+	file_string.set(strdup(join(lines,"\n").c_str()));
 	open(file_string, FileSource);
 	rewind();
-	return lines.number();
+	return lines.size();
 }
 
 
@@ -1404,7 +1396,7 @@ Parse_macros(
 	bool gl_opt_smart = (macro_set.options & CONFIG_OPT_SMART_COM_IN_CONT) ? true : false;
 	int opt_meta_colon = (macro_set.options & CONFIG_OPT_COLON_IS_META_ONLY) ? 1 : 0;
 	ConfigIfStack ifstack;
-	StringList    hereList; // used to accumulate @= multiline values
+	std::string   hereData; // used to accumulate @= multiline values
 	std::string      hereName;
 	std::string      hereTag;
 	MACRO_EVAL_CONTEXT defctx; defctx.init(NULL);
@@ -1450,8 +1442,7 @@ Parse_macros(
 		if ( ! hereName.empty()) {
 			if (name[0] == '@' && hereTag == name+1) {
 				/* expand self references only */
-				rhs = hereList.print_to_delimed_string("\n");
-				value = expand_self_macro(rhs, hereName.c_str(), macro_set, *pctx);
+				value = expand_self_macro(hereData.c_str(), hereName.c_str(), macro_set, *pctx);
 				if( value == NULL ) {
 					retval = -1;
 					name = NULL;
@@ -1459,14 +1450,16 @@ Parse_macros(
 				}
 				insert_macro(hereName.c_str(), value, macro_set, FileSource, *pctx);
 
-				free(rhs); rhs = NULL;
 				free(value); value = NULL;
 				hereName.clear();
 				hereTag.clear();
-				hereList.clearAll();
+				hereData.clear();
 				continue;
 			}
-			hereList.append(name);
+			if (!hereData.empty()) {
+				hereData += '\n';
+			}
+			hereData += name;
 			continue;
 		}
 
@@ -1765,7 +1758,7 @@ Parse_macros(
 					config_errmsg = "includes nested too deep";
 					retval = -2; // indicate that nesting depth has been exceeded.
 				} else {
-					if ( ! is_submit) local_config_sources.append(macro_source_filename(InnerSource, macro_set));
+					if ( ! is_submit) local_config_sources.emplace_back(macro_source_filename(InnerSource, macro_set));
 					MacroStreamYourFile msInner(fp, InnerSource);
 					retval = Parse_macros(msInner, depth+1, macro_set, options, pctx, config_errmsg, fnSubmit, pvSubmitData);
 				}
@@ -1815,7 +1808,7 @@ Parse_macros(
 			if (op == '@') {
 				hereName = name;
 				hereTag = rhs;
-				hereList.clearAll();
+				hereData.clear();
 				free(name); name = NULL;
 				continue;
 			}
@@ -1942,7 +1935,7 @@ FILE* Open_macro_source (
 	} else {
 		fp = safe_fopen_wrapper_follow(source, "r");
 		if ( ! fp) {
-			config_errmsg = "can't open file";
+			config_errmsg = std::string("can't open file ") + source + ": " + strerror(errno);
 			return NULL;
 		}
 	}
@@ -2672,31 +2665,6 @@ const char * strlen_unquote(const char * str, int & cch) {
 
 char * strlen_unquote(char * str, int & cch) { return const_cast<char*>(strlen_unquote((const char*)str, cch)); }
 
-#if 0
-// strdup a string with room to grow and an optional leading quote
-// and room for a trailing quote.
-char * strdup_quoted(const char* str, int cch, char quoted) {
-	if (cch < 0) cch = (int)strlen(str);
-
-	// ignore leading and/or trailing quotes when we dup
-	if (*str=='"' || (*str && *str == quoted)) { ++str; --cch; }
-	if (cch > 0 && (str[cch-1] == '"' || str[cch-1] == quoted)) --cch;
-
-	// malloc with room for quotes and a terminating 0
-	char * out = (char*)malloc(cch+3);
-	ASSERT(out);
-	char * p = out;
-
-	// copy, adding quotes or not as requested.
-	if (quoted) { *p++ = quoted; }
-	memcpy(p, str, cch*sizeof(str[0]));
-	if (quoted) { p[cch++] = quoted; }
-	p[cch] = 0;
-
-	return out;
-}
-#endif
-
 // return a pointer to the basename of a file + the given number of directories.
 // i.e. if the input is
 //     foo/bar/baz/file
@@ -3194,14 +3162,13 @@ static const char * evaluate_macro_func (
 
 		case SPECIAL_MACRO_ID_RANDOM_CHOICE:
 		{
-			StringList entries(name,",");
-			int num_entries = entries.number();
-			tvalue = NULL;
+			std::vector<std::string> entries = split(name, ",");
+			size_t num_entries = entries.size();
+			tvalue = nullptr;
 			// the the list we are choosing from has only one entry
 			// try and use that entry as a macro name.
 			if (num_entries == 1) {
-				entries.rewind();
-				const char * list_name = entries.next();
+				const char * list_name = entries.front().c_str();
 				if ( ! list_name) {
 					EXCEPT( "$RANDOM_CHOICE() config macro: no list!" );
 				}
@@ -3211,32 +3178,28 @@ static const char * evaluate_macro_func (
 				// if the first entry resolved to a macro, clear the entries list and
 				// repopulate it from the value of the macro.
 				if (lval) {
-					entries.clearAll(); list_name = NULL;
+					entries.clear(); list_name = nullptr;
 					// now re-populate the entries list from lval.
 					if (strchr(lval, '$')) {
 						char * tmp3 = expand_macro(lval, macro_set, ctx);
 						if (tmp3) {
-							entries.initializeFromString(tmp3);
+							entries = split(tmp3);
 							free(tmp3);
 						}
 					} else {
-						entries.initializeFromString(lval);
+						entries = split(lval);
 					}
-					num_entries = entries.number();
+					num_entries = entries.size();
 				} else {
 					// if the lookup failed, fall through to use the the list name as the list item,
 					// we do this for backward compatibility with the original behavior of RANDOM_CHOICE
 				}
 			}
 			if ( num_entries > 0 ) {
-				int rand_entry = (get_random_int_insecure() % num_entries) + 1;
-				int i = 0;
-				entries.rewind();
-				while ( (i < rand_entry) && (tvalue=entries.next()) ) {
-					i++;
-				}
+				int rand_entry = get_random_int_insecure() % num_entries;
+				tvalue = entries[rand_entry].c_str();
 			}
-			if( tvalue == NULL ) {
+			if( tvalue == nullptr ) {
 				EXCEPT("$RANDOM_CHOICE() macro in config file empty!" );
 			}
 			tvalue = buf = strdup(tvalue);
@@ -3245,27 +3208,27 @@ static const char * evaluate_macro_func (
 
 		case SPECIAL_MACRO_ID_RANDOM_INTEGER:
 		{
-			StringList entries(body, ",");
+			std::vector<std::string> entries = split(body, ",");
 
-			entries.rewind();
-			const char *tmp2;
 
-			tmp2 = entries.next();
+			std::string tmp2 = entries.empty() ? "" : entries.front();
 			long	min_value=0;
-			if ( string_to_long( tmp2, &min_value ) < 0 ) {
+			if ((tmp2.size() == 0) || string_to_long( tmp2.c_str(), &min_value ) < 0 ) {
 				EXCEPT( "$RANDOM_INTEGER() config macro: invalid min!" );
 			}
 
-			tmp2 = entries.next();
+			tmp2 = entries.size() > 1 ? entries[1] : "";
 			long	max_value=0;
-			if ( string_to_long( tmp2, &max_value ) < 0 ) {
+			if ((tmp2.size() == 0) || string_to_long( tmp2.c_str(), &max_value ) < 0 ) {
 				EXCEPT( "$RANDOM_INTEGER() config macro: invalid max!" );
 			}
 
-			tmp2 = entries.next();
+			tmp2 = entries.size() > 2 ? entries[2] : "";
 			long	step = 1;
-			if ( string_to_long( tmp2, &step ) < -1 ) {
-				EXCEPT( "$RANDOM_INTEGER() config macro: invalid step!" );
+			if (tmp2.size() > 0) {
+				if (string_to_long( tmp2.c_str(), &step ) < -1 ) {
+					EXCEPT( "$RANDOM_INTEGER() config macro: invalid step!");
+				}
 			}
 
 			if ( step < 1 ) {
@@ -3836,21 +3799,6 @@ static const char * get_nth_list_item(const char * list, char sep, std::string &
 	}
 	return p;
 }
-
-#if 0 // not currently  used.
-// append the value of the Nth list item to the input buffer.
-// returns NULL if the input list is NULL or if it has no Nth item.
-//
-static const char * append_nth_list_item(const char * list, char sep, std::string &buf, int index, bool trimmed=true) {
-	const char * p, *e;
-	p = nth_list_item(list, sep, e, index, trimmed);
-	if (p) {
-		// if we got non-null back. always append something to insure that buf.c_str() will not fault.
-		if (e > p) { buf.append(p, e-p); } else { buf.append(""); }
-	}
-	return p;
-}
-#endif
 
 // helper function for evaluate_macro_func.
 // Use this function when the argument of a macro can be either a macro name to be looked up, or an expression
@@ -4998,6 +4946,10 @@ const char * hash_iter_key(HASHITER& it) {
 	if (hash_iter_done(it)) return NULL;
 	if (it.is_def) {
 		return it.pdef ? it.pdef->key : it.set.defaults->table[it.id].key;
+	}
+	if (it.set.table == NULL) {
+	    if(! hash_iter_next(it)) { return NULL; }
+	    return hash_iter_key(it);
 	}
 	return it.set.table[it.ix].key;
 }

@@ -21,6 +21,42 @@ from htcondor_cli.utils import readable_time, readable_size, s
 
 JSM_HTC_JOB_SUBMIT = 3
 
+def get_job_ad(logger, job_id, options):
+    # Split job id into cluster and proc
+    if "." in job_id:
+        cluster_id, proc_id = [int(i) for i in job_id.split(".")][:2]
+    else:
+        cluster_id = int(job_id)
+        proc_id = 0
+
+    # Get schedd
+    schedd = htcondor.Schedd()
+
+    # Query schedd
+    constraint = f"ClusterId == {cluster_id} && ProcId == {proc_id}"
+    projection = ["JobStartDate", "JobStatus", "QDate", "CompletionDate", "EnteredCurrentStatus",
+                "RequestMemory", "MemoryUsage", "RequestDisk", "DiskUsage", "HoldReason",
+                "ResourceType", "TargetAnnexName", "NumShadowStarts", "NumJobStarts", "NumHolds",
+                "JobCurrentStartTransferOutputDate", "TotalSuspensions", "CommittedTime",
+                "RemoteWallClockTime", "Iwd", "Out", "Err", "UserLog"]
+    try:
+        job = schedd.query(constraint=constraint, projection=projection, limit=1)
+    except IndexError:
+        raise RuntimeError(f"No job found for ID {job_id}.")
+    except Exception as e:
+        raise RuntimeError(f"Error looking up job status: {str(e)}")
+
+    # Check the history if no jobs found
+    if len(job) == 0 and not options["skip_history"]:
+        try:
+            logger.info(f"Job {job_id} was not found in the active queue, checking history...")
+            logger.info("(This may take a while, Ctrl-C to cancel.)")
+            job = list(schedd.history(constraint=constraint, projection=projection, match=1))
+        except KeyboardInterrupt:
+            logger.warning("History check cancelled.")
+            job = []
+    return job
+
 class Submit(Verb):
     """
     Submits a job when given a submit file
@@ -69,7 +105,7 @@ class Submit(Verb):
                 submit_data = f.read()
             submit_description = htcondor.Submit(submit_data)
             # Set s_method to HTC_JOB_SUBMIT
-            submit_description.setSubmitMethod(JSM_HTC_JOB_SUBMIT,True)
+            submit_description.setSubmitMethod(JSM_HTC_JOB_SUBMIT, True)
 
             annex_name = options["annex_name"]
             if annex_name is not None:
@@ -124,7 +160,7 @@ class Submit(Verb):
 
             Path(TMP_DIR).mkdir(parents=True, exist_ok=True)
             DAGMan.write_slurm_dag(submit_file, options["runtime"], options["email"])
-            os.chdir(TMP_DIR) # DAG must be submitted from TMP_DIR
+            os.chdir(TMP_DIR)  # DAG must be submitted from TMP_DIR
             submit_description = htcondor.Submit.from_dag(str(TMP_DIR / "slurm_submit.dag"))
             submit_description["+ResourceType"] = "\"Slurm\""
 
@@ -132,7 +168,7 @@ class Submit(Verb):
             submit_qargs = submit_description.getQArgs()
             if submit_qargs != "" and submit_qargs != "1":
                 raise ValueError("Can only submit one job at a time. "
-                    "See the job-set syntax for submitting multiple jobs.")
+                                 "See the job-set syntax for submitting multiple jobs.")
 
             try:
                 result = schedd.submit(submit_description, count=1)
@@ -148,7 +184,7 @@ class Submit(Verb):
 
             Path(TMP_DIR).mkdir(parents=True, exist_ok=True)
             DAGMan.write_ec2_dag(file, options["runtime"], options["email"])
-            os.chdir(TMP_DIR) # DAG must be submitted from TMP_DIR
+            os.chdir(TMP_DIR)  # DAG must be submitted from TMP_DIR
             submit_description = htcondor.Submit.from_dag("ec2_submit.dag")
             submit_description["+ResourceType"] = "\"EC2\""
 
@@ -156,7 +192,7 @@ class Submit(Verb):
             submit_qargs = submit_description.getQArgs()
             if submit_qargs != "" and submit_qargs != "1":
                 raise ValueError("Can only submit one job at a time. "
-                    "See the job-set syntax for submitting multiple jobs.")
+                                 "See the job-set syntax for submitting multiple jobs.")
 
             try:
                 result = schedd.submit(submit_description, count=1)
@@ -165,6 +201,92 @@ class Submit(Verb):
             except Exception as e:
                 raise RuntimeError(f"Error submitting job:\n{str(e)}")
 
+
+class Log(Verb):
+    """
+    Shows the eventlog  of a job when given a job id
+    """
+
+    options = {
+        "job_id": {
+            "args": ("job_id",),
+            "help": "Job ID",
+        },
+        "skip_history": {
+            "args": ("--skip-history",),
+            "action": "store_true",
+            "default": False,
+            "help": "Skip checking history for log file",
+        },
+    }
+
+    def __init__(self, logger, job_id, **options):
+        job = None
+
+        job = get_job_ad(logger, job_id, options)
+        log_file = job[0].get("UserLog","")
+        with open(log_file, 'r') as f:
+            print(f.read())
+
+class Out(Verb):
+    """
+    Shows the stdout  of a job when given a job id
+    """
+
+    options = {
+        "job_id": {
+            "args": ("job_id",),
+            "help": "Job ID",
+        },
+        "skip_history": {
+            "args": ("--skip-history",),
+            "action": "store_true",
+            "default": False,
+            "help": "Skip checking history for stdout",
+        },
+    }
+
+    def __init__(self, logger, job_id, **options):
+        job = None
+
+        job = get_job_ad(logger, job_id, options)
+        out_file = job[0].get("Out","")
+        iwd      = job[0].get("Iwd","")
+
+        if (out_file[0] != '/'):
+            out_file = iwd + "/" + out_file
+        with open(out_file, 'r') as f:
+            print(f.read())
+
+class Err(Verb):
+    """
+    Shows the stderr of a job when given a job id
+    """
+
+    options = {
+        "job_id": {
+            "args": ("job_id",),
+            "help": "Job ID",
+        },
+        "skip_history": {
+            "args": ("--skip-history",),
+            "action": "store_true",
+            "default": False,
+            "help": "Skip checking history for stderr",
+        },
+    }
+
+    def __init__(self, logger, job_id, **options):
+        job = None
+
+        job = get_job_ad(logger, job_id, options)
+        err_file = job[0].get("Err","")
+        iwd      = job[0].get("Iwd","")
+
+        if (err_file[0] != '/'):
+            err_file = iwd + "/" + err_file
+        with open(err_file, 'r') as f:
+            print(f.read())
 
 class Status(Verb):
     """
@@ -184,44 +306,12 @@ class Status(Verb):
         },
     }
 
-
     def __init__(self, logger, job_id, **options):
         job = None
         job_status = "IDLE"
         resource_type = "htcondor"
 
-        # Split job id into cluster and proc
-        if "." in job_id:
-            cluster_id, proc_id = [int(i) for i in job_id.split(".")][:2]
-        else:
-            cluster_id = int(job_id)
-            proc_id = 0
-
-        # Get schedd
-        schedd = htcondor.Schedd()
-
-        # Query schedd
-        constraint = f"ClusterId == {cluster_id} && ProcId == {proc_id}"
-        projection = ["JobStartDate", "JobStatus", "QDate", "CompletionDate", "EnteredCurrentStatus",
-            "RequestMemory", "MemoryUsage", "RequestDisk", "DiskUsage", "HoldReason",
-            "ResourceType", "TargetAnnexName", "NumShadowStarts", "NumJobStarts", "NumHolds",
-            "JobCurrentStartTransferOutputDate", "TotalSuspensions"]
-        try:
-            job = schedd.query(constraint=constraint, projection=projection, limit=1)
-        except IndexError:
-            raise RuntimeError(f"No job found for ID {job_id}.")
-        except Exception as e:
-            raise RuntimeError(f"Error looking up job status: {str(e)}")
-
-        # Check the history if no jobs found
-        if len(job) == 0 and not options["skip_history"]:
-            try:
-                logger.info(f"Job {job_id} was not found in the active queue, checking history...")
-                logger.info("(This may take a while, Ctrl-C to cancel.)")
-                job = list(schedd.history(constraint=constraint, projection=projection, match=1))
-            except KeyboardInterrupt:
-                logger.warning("History check cancelled.")
-                job = []
+        job = get_job_ad(logger, job_id, options)
 
         if len(job) == 0:
             raise RuntimeError(f"No job found for ID {job_id}.")
@@ -252,19 +342,23 @@ class Status(Verb):
             job_execs = job_ad.get("NumJobStarts", 0)
             job_holds = job_ad.get("NumHolds", 0)
             job_suspends = job_ad.get("TotalSuspensions", 0)
+            # Calculate job goodput
+            job_committed_time = job_ad.get("CommittedTime", 0)
+            job_wall_clock_time = job_ad.get("RemoteWallClockTime", 0)
+            goodput = (job_committed_time / job_wall_clock_time) if job_wall_clock_time > 0 else 0.0
 
             # Compute memory and disk usage if available
             memory_usage, disk_usage = None, None
             if "MemoryUsage" in job_ad:
                 memory_usage = (
-                        f"{readable_size(job_ad.eval('MemoryUsage')*10**6)} out of "
-                        f"{readable_size(job_ad.eval('RequestMemory')*10**6)} requested"
-                    )
+                    f"{readable_size(job_ad.eval('MemoryUsage')*10**6)} out of "
+                    f"{readable_size(job_ad.eval('RequestMemory')*10**6)} requested"
+                )
             if "DiskUsage" in job_ad:
                 disk_usage = (
-                        f"{readable_size(job_ad.eval('DiskUsage')*10**3)} out of "
-                        f"{readable_size(job_ad.eval('RequestDisk')*10**3)} requested"
-                    )
+                    f"{readable_size(job_ad.eval('DiskUsage')*10**3)} out of "
+                    f"{readable_size(job_ad.eval('RequestDisk')*10**3)} requested"
+                )
 
             # Print information relevant to each job status
             if job_status == htcondor.JobStatus.IDLE:
@@ -352,7 +446,16 @@ class Status(Verb):
                     logger.info(f"Its last disk usage was {disk_usage}.")
 
             else:
+                goodput = None
                 logger.info(f"Job {job_id} is in an unknown state (JobStatus = {job_status}).")
+
+            # Display Good put for all job states
+            if goodput is not None:
+                goodput = goodput * 100
+                tense = "had" if job_status == htcondor.JobStatus.COMPLETED else "has"
+                logger.info(
+                    f"Job {tense} {goodput:.1f}% goodput for {readable_time(job_wall_clock_time)} of wall clock time."
+                )
 
         # Jobs running on provisioned Slurm or EC2 resources need to retrieve
         # additional information from the provisioning DAGMan log
@@ -450,7 +553,7 @@ class Resources(Verb):
             try:
                 job = schedd.query(
                     constraint=f"ClusterId == {job_id}",
-                    projection=["RemoteHost","TargetAnnexName","MachineAttrAnnexName0"]
+                    projection=["RemoteHost", "TargetAnnexName", "MachineAttrAnnexName0"]
                 )
             except IndexError:
                 raise RuntimeError(f"No jobs found for ID {job_id}.")
@@ -545,7 +648,6 @@ class Resources(Verb):
                     logger.info(f"Slurm resources were terminated since {round(time_diff.seconds/60)}m{(time_diff.seconds%60)}s")
 
 
-
 class Job(Noun):
     """
     Run operations on HTCondor jobs
@@ -557,10 +659,18 @@ class Job(Noun):
     class status(Status):
         pass
 
+    class out(Out):
+        pass
+
+    class err(Err):
+        pass
+
+    class log(Log):
+        pass
+
     class resources(Resources):
         pass
 
     @classmethod
     def verbs(cls):
-        return [cls.submit, cls.status, cls.resources]
-
+        return [cls.submit, cls.status, cls.out, cls.err, cls.log, cls.resources]

@@ -23,6 +23,7 @@
 #include "classad/lexer.h"
 #include "classad/util.h"
 #include "classad/classad.h"
+#include <charconv>
 
 using std::string;
 using std::vector;
@@ -311,7 +312,7 @@ tokenizeNumber (void)
 {
 	enum { NONE, INTEGER, REAL };
 	int		numberType = NONE;
-	Value::NumberFactor f;
+	Value::NumberFactor f = Value::NumberFactor::NO_FACTOR;
 	long long integer=0;
 	double	real=0;
 	int 	och;
@@ -431,22 +432,16 @@ tokenizeNumber (void)
 
 	if( numberType == INTEGER ) {
 		cut( );
-		long long l;
-		int base = 0;
+		long long l = 0;
 		if ( _useOldClassAdSemantics || jsonLex ) {
 			// Old ClassAds and JSON don't support octal or hexidecimal
 			// representations for integers.
-			base = 10;
 			if ( lexBuffer[0] == '0' && lexBuffer.length() > 1 ) {
 				tokenType = LEX_TOKEN_ERROR;
 				return( tokenType );
 			}
 		}
-#ifdef WIN32
-		l = _strtoi64( lexBuffer.c_str(), NULL, base );
-#else
-		l = strtoll( lexBuffer.c_str(), NULL, base );
-#endif
+		std::ignore = std::from_chars(lexBuffer.data(), lexBuffer.data() + lexBuffer.size(), l, 10);
 		integer = l;
 	} else if( numberType == REAL ) {
 		cut( );
@@ -459,20 +454,6 @@ tokenizeNumber (void)
 		 * bomb if it does. It should be reported as a bug.
 		 */
 			CLASSAD_EXCEPT("Should not reach here");
-	}
-
-	if ( jsonLex ) {
-		f = Value::NO_FACTOR;
-	} else {
-		switch( toupper( ch ) ) {
-		case 'B': f = Value::B_FACTOR; wind( ); break;	
-		case 'K': f = Value::K_FACTOR; wind( ); break;
-		case 'M': f = Value::M_FACTOR; wind( ); break;
-		case 'G': f = Value::G_FACTOR; wind( ); break;
-		case 'T': f = Value::T_FACTOR; wind( ); break;
-		default:
-			f = Value::NO_FACTOR;
-		}
 	}
 
 	if( numberType == INTEGER ) {

@@ -17,12 +17,10 @@
  *
  ***************************************************************/
 
-
 #if !defined(_CONDOR_STARTER_H)
 #define _CONDOR_STARTER_H
 
 #include "condor_daemon_core.h"
-#include "list.h"
 #include "user_proc.h"
 #include "job_info_communicator.h"
 #include "exit.h"
@@ -35,9 +33,11 @@
 #include "profile.WINDOWS.h" // for OwnerProfile class
 #endif
 
+#if 1 //def HAVE_DATA_REUSE_DIR TOO: remove this someday
 namespace htcondor {
 class DataReuseDirectory;
 }
+#endif
 
 /** The starter class.  Basically, this class does some initialization
 	stuff and manages a set of UserProc instances, each of which 
@@ -158,11 +158,16 @@ public:
 		*/
 	virtual int jobEnvironmentReady( void );
 	
+	virtual int jobEnvironmentCannotReady(int status, const struct UnreadyReason & urea);
+
 		/**
 		 * 
 		 * 
 		 **/
 	virtual void SpawnPreScript( int timerID = -1 );
+
+		/* timer to handle unwinding to pump while skipping job spawn */
+	virtual void SkipJobs( int timerID = -1 );
 
 		/** Does initial cleanup once all the jobs (and post script, if
 			any) have completed.  This notifies the JIC so it can
@@ -283,7 +288,7 @@ public:
 		/** Returns the number of jobs currently running under
 		 * this multi-starter.
 		 */
-	int numberOfJobs( void ) { return m_job_list.Number(); };
+	int numberOfJobs( void ) { return m_job_list.size(); };
 
 	bool isGridshell( void ) const {return is_gridshell;};
 #ifdef WIN32
@@ -318,7 +323,11 @@ public:
 	int GetShutdownExitCode() const { return m_shutdown_exit_code; };
 	void SetShutdownExitCode( int code ) { m_shutdown_exit_code = code; };
 
+#ifdef HAVE_DATA_REUSE_DIR
 	htcondor::DataReuseDirectory * getDataReuseDirectory() const {return m_reuse_dir.get();}
+#else
+	htcondor::DataReuseDirectory * getDataReuseDirectory() const {return nullptr;}
+#endif
 
 	void SetJobEnvironmentReady(const bool isReady) {m_job_environment_is_ready = isReady;}
 
@@ -326,8 +335,13 @@ public:
 
 	void setTmpDir(const std::string &dir) { this->tmpdir = dir;}
 protected:
-	List<UserProc> m_job_list;
-	List<UserProc> m_reaped_job_list;
+	std::vector<UserProc *> m_job_list;
+	std::vector<UserProc *> m_reaped_job_list;
+
+	// JobEnvironmentCannotReady sets these to pass along the setup failure info that
+	// we want to report *after* we finish transfer of FailureFiles
+	int            m_setupStatus = 0; // 0 is success, non-zero indicates failure of job setup
+	struct UnreadyReason  m_urea; // details when m_setupStatus is non-zero
 
 #ifdef WIN32
 	OwnerProfile m_owner_profile;
@@ -359,7 +373,7 @@ private:
 		   @see Starter::publishJobExitAd()
 		   @see UserProc::PublishUpdateAd()
 		*/
-	bool publishJobInfoAd(List<UserProc>* proc_list, ClassAd* ad);
+	bool publishJobInfoAd(std::vector<UserProc * > *proc_list, ClassAd* ad);
 
 		/*
 		  @param result Buffer in which to store fully-qualified user name of the job owner
@@ -375,12 +389,6 @@ private:
 
 
 	bool WriteAdFiles() const;
-
-		//
-		// Check the disk usage of this job; if over the limits, potentially
-		// put the job on hold.
-		//
-	void CheckDiskUsage( int timerID = -1 );
 
 		// // // // // // // //
 		// Private Data Members
@@ -401,6 +409,10 @@ private:
 #ifdef WIN32
 	bool has_encrypted_working_dir;
 #endif
+#ifdef LINUX
+	std::unique_ptr<VolumeManager::Handle> m_lv_handle;
+#endif // LINUX
+
 	int ShuttingDown;
 	int starter_stdin_fd;
 	int starter_stdout_fd;
@@ -424,13 +436,11 @@ private:
 		// the maximum permitted disk usage and the polling timer
 		//
 #if defined(LINUX)
-	int64_t m_lvm_max_size_kb{0};
-	int m_lvm_poll_tid{-1};
+	void CheckLVUsage( int timerID = -1 );
+	int64_t m_lvm_lv_size_kb{0};
 	time_t m_lvm_last_space_issue{-1};
+	int m_lvm_poll_tid{-1};
 	bool m_lvm_held_job{false};
-	std::string m_lvm_thin_volume;
-	std::string m_lvm_thin_pool;
-	std::string m_lvm_volume_group;
 #endif
 
 	UserProc* pre_script;
@@ -451,16 +461,16 @@ private:
 		// starter's exit code be?
 	int m_shutdown_exit_code;
 
-		// Manage the data reuse directory.
+#ifdef HAVE_DATA_REUSE_DIR
+	// Manage the data reuse directory.
 	std::unique_ptr<htcondor::DataReuseDirectory> m_reuse_dir;
+#endif
 
 	// The string to set the tmp env vars to
 	std::string tmpdir;
-
-#ifdef LINUX
-	std::unique_ptr<VolumeManager::Handle> m_volume_mgr;
-#endif // LINUX
 };
+
+#define SANDBOX_STARTER_LOG_FILENAME ".starter.log"
 
 #endif
 

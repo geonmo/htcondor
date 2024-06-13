@@ -368,14 +368,6 @@ bool add_attrs_from_string_tokens(classad::References & attrs, const char * str,
 	return false;
 }
 
-void add_attrs_from_StringList(const StringList & list, classad::References & attrs)
-{
-	StringList &constList = const_cast<StringList &>(list);
-	for (const char * p = constList.first(); p != NULL; p = constList.next()) {
-		attrs.insert(p);
-	}
-}
-
 // print attributes to a std::string, returning the result as a const char *
 const char *print_attrs(std::string &out, bool append, const classad::References & attrs, const char * delim)
 {
@@ -392,29 +384,3 @@ const char *print_attrs(std::string &out, bool append, const classad::References
 	}
 	return out.c_str();
 }
-
-// copy attrs into stringlist, returns true if list was modified
-// if append is false, list is cleared first.
-// if check_exist is true, items are only added if the are not already in the list. comparison is case-insensitive.
-bool initStringListFromAttrs(StringList & list, bool append, const classad::References & attrs, bool check_exist /*=false*/)
-{
-	bool modified = false;
-	if ( ! append) {
-		if ( ! list.isEmpty()) {
-			modified = true;
-			list.clearAll();
-		}
-		check_exist = false; // no need to do this if we cleared the list
-	}
-	for (classad::References::const_iterator it = attrs.begin(); it != attrs.end(); ++it) {
-		if (check_exist && list.contains_anycase(it->c_str())) {
-			continue;
-		}
-		list.append(it->c_str());
-		modified = true;
-	}
-	return modified;
-}
-
-
-
